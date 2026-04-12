@@ -117,6 +117,7 @@ class AcornApp(App):
         self.conn.tool_executor = self.executor
 
         # Set up message handlers
+        self.conn.on('chat:history', self._on_history)
         self.conn.on('chat:delta', self._on_delta)
         self.conn.on('chat:status', self._on_status)
         self.conn.on('chat:done', self._on_done)
@@ -148,10 +149,19 @@ class AcornApp(App):
 
     def _update_mode_bar(self):
         bar = self.query_one('#mode-bar', Static)
+        width = self.size.width or 80
         if self.plan_mode:
-            bar.update('[white on blue] PLAN [/] research only — ctrl+p to toggle')
+            line = Text()
+            line.append(' PLAN ', style='bold white on blue')
+            line.append(' research only — ctrl+p to toggle ', style='white on dark_blue')
+            line.pad_right(width)
+            bar.update(line)
         else:
-            bar.update('[black on green] EXECUTE [/] full agent mode — ctrl+p to toggle')
+            line = Text()
+            line.append(' EXECUTE ', style='bold black on green')
+            line.append(' full agent mode — ctrl+p to toggle ', style='black on dark_green')
+            line.pad_right(width)
+            bar.update(line)
 
     def _log(self, renderable):
         try:
@@ -286,6 +296,34 @@ class AcornApp(App):
         self._scroll_bottom()
 
     # ── WebSocket event handlers ───────────────────────────────────
+
+    async def _on_history(self, msg):
+        """Render chat history on reconnect (--continue)."""
+        messages = msg.get('messages', [])
+        if not messages:
+            return
+        t = self.theme_data
+        self._log(Text(f'  ── Session history ({len(messages)} messages) ──', style='dim'))
+        self._log(Text(''))
+        for m in messages:
+            role = m.get('role', 'user')
+            text = m.get('text', '')
+            if not text.strip():
+                continue
+            if role == 'user':
+                self._log(Text(f'  {self.user}', style=f'bold {t["prompt_user"]}'))
+                # Truncate long user messages (context preambles)
+                display = text[:300] + '...' if len(text) > 300 else text
+                self._log(Text(f'  {display}', style='dim'))
+            elif role == 'assistant':
+                try:
+                    self._log(Markdown(text))
+                except Exception:
+                    self._log(Text(text))
+            self._log(Text(''))
+        self._log(Text(f'  ── End of history ──', style='dim'))
+        self._log(Text(''))
+        self._scroll_bottom()
 
     async def _on_start(self, msg):
         pass
