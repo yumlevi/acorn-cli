@@ -294,12 +294,10 @@ class AcornApp(App):
         text = msg.get('text', '')
         self._stream_buffer += text
         self._response_text.append(text)
-        # Re-render the full streamed response as markdown
+        # Write each chunk directly to transcript
         try:
             transcript = self.query_one('#transcript', RichLog)
-            # Remove last line (previous partial render) and re-render
-            # For simplicity, just write deltas as plain text for now
-            # Full markdown render happens on chat:done
+            transcript.write(Text(text), scroll_end=True)
         except NoMatches:
             pass
 
@@ -347,12 +345,8 @@ class AcornApp(App):
         response = ''.join(self._response_text)
         t = self.theme_data
 
-        # Render full response as markdown
-        if response.strip():
-            try:
-                self._log(Markdown(response))
-            except Exception:
-                self._log(Text(response))
+        # Response already streamed via _on_delta — just add spacing
+        self._log(Text(''))
 
         # Usage stats
         usage = msg.get('usage', {})
