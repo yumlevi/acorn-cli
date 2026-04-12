@@ -60,9 +60,6 @@ class AcornApp(App):
     ]
 
     CSS = """
-    Screen {
-        background: $background;
-    }
     #header-bar {
         dock: top;
         height: 3;
@@ -161,17 +158,14 @@ class AcornApp(App):
         bg_input = t['bg_input']
         border_color = t['border']
 
-        # Set Textual dark mode based on theme brightness
-        light_themes = {'light'}
-        self.dark = t['name'] not in light_themes
+        # Disable Textual's built-in dark/light mode — we control all colors
+        self.dark = False
 
-        # Every widget gets explicit bg + fg
-        for widget_id, widget_bg, widget_fg in [
-            (None, bg, fg),  # Screen/App level
-        ]:
-            self.styles.background = bg
-            self.styles.color = fg
+        # Screen-level background
+        self.screen.styles.background = bg
+        self.screen.styles.color = fg
 
+        # Every widget gets explicit bg + fg + borders
         widget_styles = [
             ('#header-bar', bg_header, fg, ('solid', border_color), None),
             ('#main-scroll', bg, fg, None, None),
