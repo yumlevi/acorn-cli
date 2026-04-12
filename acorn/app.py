@@ -25,11 +25,17 @@ from acorn.protocol import chat_message
 from acorn.session import compute_session_id, project_name, get_git_branch
 from acorn.tools.executor import ToolExecutor
 from acorn.themes import get_theme
+from acorn.questions import parse_questions, QuestionScreen, format_answers
 
 PLAN_PREFIX = (
     '[MODE: Plan only. You are in planning mode.\n'
     'Phase 1 — UNDERSTAND: Read files, search the codebase, and use web_search/web_fetch as needed to fully understand the task. '
-    'Ask the user clarifying questions if anything is ambiguous — do NOT assume.\n'
+    'If anything is ambiguous, ask the user clarifying questions using this exact format:\n\n'
+    'QUESTIONS:\n'
+    '1. Your question here? [Option A / Option B / Option C]\n'
+    '2. Open-ended question here?\n\n'
+    'Use [brackets with / separated options] when there are clear choices. Omit brackets for open-ended questions. '
+    'The client will present these as an interactive form and return the answers.\n'
     'Phase 2 — PLAN: Once you have enough context, present a clear step-by-step plan of what you would change and why. '
     'Include file paths and describe each change.\n'
     'RULES: Do NOT make any changes (no write_file, edit_file, or exec). '
@@ -475,7 +481,18 @@ class AcornApp(App):
 
         self._scroll_bottom()
 
-        if self.plan_mode and response and ('PLAN_READY' in response or len(response) > 500):
+        # Detect structured questions from the agent
+        questions = parse_questions(response) if response else []
+        if questions and len(questions) >= 1:
+            self._log(Text(f'  Agent has {len(questions)} question(s) for you', style=t['accent2']))
+            self._scroll_bottom()
+            # Launch interactive question modal
+            self.app_questions = questions
+            self.push_screen(
+                QuestionScreen(questions, t),
+                callback=self._on_questions_answered,
+            )
+        elif self.plan_mode and response and ('PLAN_READY' in response or len(response) > 500):
             self._log(Panel(
                 'Type [bold]execute[/bold] to run the plan, or provide feedback',
                 border_style=t['accent2'],
@@ -486,6 +503,33 @@ class AcornApp(App):
         self._stream_buffer = ''
         self._response_text = []
         self._tool_lines = []
+
+    def _on_questions_answered(self, answers):
+        """Callback when user finishes the question modal."""
+        if answers is None:
+            self._log(Text('  Questions cancelled', style='dim'))
+            self._scroll_bottom()
+            return
+        # Format and send answers back to the agent
+        questions = getattr(self, 'app_questions', [])
+        formatted = format_answers(questions, answers)
+        t = self.theme_data
+        self._log(Panel(
+            formatted,
+            title=f'[bold]{self.user}[/bold]',
+            title_align='left',
+            border_style=t['prompt_user'],
+            padding=(0, 1),
+        ))
+        self._scroll_bottom()
+        # Send to agent
+        self._stream_buffer = ''
+        self._response_text = []
+        self._tool_lines = []
+        self.generating = True
+        asyncio.create_task(
+            self.conn.send(chat_message(self.session_id, formatted, self.user))
+        )
 
     async def _on_error(self, msg):
         self.generating = False
