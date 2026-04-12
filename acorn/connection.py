@@ -4,6 +4,7 @@ import asyncio
 import json
 import urllib.request
 import urllib.error
+from urllib.parse import urlparse
 import websockets
 
 
@@ -11,10 +12,34 @@ class AuthError(Exception):
     pass
 
 
+def _build_base_url(host: str, port: int) -> str:
+    """Build base HTTP URL from host + port. Handles:
+    - Plain IP/hostname: 192.168.1.78 → http://192.168.1.78:18810
+    - Full URL: https://acorn.example.com → https://acorn.example.com
+    - URL with path: https://proxy.example.com/acorn → https://proxy.example.com/acorn
+    """
+    if '://' in host:
+        # Full URL provided — use as-is, strip trailing slash
+        return host.rstrip('/')
+    # Plain host — build URL with port
+    return f'http://{host}:{port}'
+
+
+def _build_ws_url(base_url: str) -> str:
+    """Convert HTTP base URL to WebSocket URL."""
+    if base_url.startswith('https://'):
+        return 'wss://' + base_url[8:]
+    elif base_url.startswith('http://'):
+        return 'ws://' + base_url[7:]
+    return 'ws://' + base_url
+
+
 class Connection:
     def __init__(self, host: str, port: int):
         self.host = host
         self.port = port
+        self.base_url = _build_base_url(host, port)
+        self.ws_base = _build_ws_url(self.base_url)
         self.ws = None
         self.token = None
         self.tool_executor = None
@@ -22,7 +47,7 @@ class Connection:
         self._receive_task = None
 
     async def authenticate(self, username: str, key: str) -> str:
-        url = f'http://{self.host}:{self.port}/api/acorn/auth'
+        url = f'{self.base_url}/api/acorn/auth'
         payload = json.dumps({'username': username, 'key': key}).encode()
         req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'}, method='POST')
         try:
@@ -40,7 +65,7 @@ class Connection:
             raise AuthError(f'HTTP {e.code}: {body[:200]}')
 
     async def connect(self, token: str):
-        url = f'ws://{self.host}:{self.port}/ws?token={token}'
+        url = f'{self.ws_base}/ws?token={token}'
         self.ws = await websockets.connect(url, ping_interval=20, ping_timeout=10, max_size=10 * 1024 * 1024)
         self._receive_task = asyncio.create_task(self._receive_loop())
 

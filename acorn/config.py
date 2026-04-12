@@ -50,10 +50,8 @@ def save_config(cfg: dict):
 def run_setup_wizard() -> dict:
     from acorn.themes import list_themes
     print('Welcome to Acorn! Let\'s connect to your Anima agent.\n')
-    raw_host = input('Anima host [localhost]: ').strip() or 'localhost'
-    # Strip protocol and trailing slashes
-    host = raw_host.replace('https://', '').replace('http://', '').strip('/')
-    port_str = input('Anima web port [18810]: ').strip() or '18810'
+    host = input('Anima host or URL [localhost]: ').strip() or 'localhost'
+    port_str = input('Anima web port [18810] (ignored if host is a full URL): ').strip() or '18810'
     port = int(port_str)
     user = input('Your username: ').strip()
     if not user:
