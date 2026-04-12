@@ -1,0 +1,218 @@
+"""Acorn CLI — main entry point."""
+
+import argparse
+import asyncio
+import json
+import os
+import sys
+
+from rich.console import Console
+
+from acorn.config import load_config, run_setup_wizard
+from acorn.connection import Connection, AuthError
+from acorn.context import gather_context
+from acorn.permissions import Permissions
+from acorn.protocol import chat_message
+from acorn.renderer import Renderer
+from acorn.session import compute_session_id, project_name, get_git_branch
+from acorn.tools.executor import ToolExecutor
+from acorn.commands.registry import get_command
+import acorn.commands.builtin  # noqa: F401 — registers commands
+
+
+async def send_and_stream(conn, session_id, user, content, renderer):
+    """Send a message and stream the response."""
+    done_event = asyncio.Event()
+    final_data = {}
+
+    async def on_start(msg):
+        pass
+
+    async def on_delta(msg):
+        renderer.stream_delta(msg.get('text', ''))
+
+    async def on_status(msg):
+        status = msg.get('status', '')
+        if status == 'thinking_start':
+            renderer.show_thinking()
+        elif status == 'thinking':
+            renderer.show_thinking(msg.get('tokens', 0))
+        elif status == 'thinking_done':
+            renderer.clear_thinking()
+        elif status == 'tool_exec_start':
+            renderer.show_tool_start(msg.get('tool', ''), msg.get('detail', ''))
+        elif status == 'tool_exec_done':
+            renderer.show_tool_done(msg.get('tool', ''), msg.get('resultChars', 0), msg.get('durationMs', 0))
+
+    async def on_code_view(msg):
+        renderer.show_code_view(msg.get('path', ''), msg.get('content', ''), msg.get('language', 'text'), msg.get('isNew', False))
+
+    async def on_code_diff(msg):
+        renderer.show_diff(msg.get('path', ''), msg.get('oldText', ''), msg.get('newText', ''))
+
+    async def on_done(msg):
+        final_data.update(msg)
+        done_event.set()
+
+    async def on_error(msg):
+        renderer.show_error(msg.get('error', 'Unknown error'))
+        done_event.set()
+
+    async def on_tool(msg):
+        pass  # tool name shown via status events
+
+    conn.on('chat:start', on_start)
+    conn.on('chat:delta', on_delta)
+    conn.on('chat:status', on_status)
+    conn.on('code:view', on_code_view)
+    conn.on('code:diff', on_code_diff)
+    conn.on('chat:done', on_done)
+    conn.on('chat:error', on_error)
+    conn.on('chat:tool', on_tool)
+
+    renderer.start_streaming()
+    await conn.send(chat_message(session_id, content, user))
+
+    try:
+        await asyncio.wait_for(done_event.wait(), timeout=600)
+    except asyncio.TimeoutError:
+        renderer.show_error('Response timed out (10 min)')
+
+    renderer.finish_streaming(
+        final_data.get('usage'),
+        final_data.get('iterations'),
+        final_data.get('toolUsage'),
+    )
+
+
+async def run_repl(conn, session_id, user, renderer, executor):
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.history import FileHistory
+    from pathlib import Path
+
+    history_path = Path.home() / '.acorn' / 'history'
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+    session = PromptSession(history=FileHistory(str(history_path)))
+
+    state = {'context_sent': False}
+    cwd = os.getcwd()
+    proj = project_name(cwd)
+    branch = get_git_branch(cwd)
+
+    renderer.console.print(f'[bold]Acorn[/bold] connected as [cyan]{user}[/cyan] to [green]{proj}[/green]')
+    renderer.console.print('[dim]Type /help for commands, /quit to exit[/dim]\n')
+
+    while True:
+        try:
+            branch = get_git_branch(cwd) or ''
+            prompt_text = f'{user}@{proj}'
+            if branch:
+                prompt_text += f' ({branch})'
+            prompt_text += ' ❯ '
+
+            text = await session.prompt_async(prompt_text)
+            text = text.strip()
+            if not text:
+                continue
+
+            # Slash commands
+            if text.startswith('/'):
+                parts = text.split(None, 1)
+                cmd_name = parts[0]
+                cmd_args = parts[1] if len(parts) > 1 else ''
+                handler = get_command(cmd_name)
+                if handler:
+                    result = await handler(
+                        cmd_args,
+                        conn=conn, session_id=session_id, user=user,
+                        renderer=renderer, executor=executor, state=state,
+                    )
+                    if result == 'quit':
+                        break
+                else:
+                    renderer.show_error(f'Unknown command: {cmd_name}')
+                continue
+
+            # Enrich with context on first message
+            content = text
+            if not state['context_sent']:
+                ctx = gather_context(cwd)
+                content = ctx + '\n\n' + text
+                state['context_sent'] = True
+
+            await send_and_stream(conn, session_id, user, content, renderer)
+
+        except KeyboardInterrupt:
+            continue
+        except EOFError:
+            break
+
+
+async def async_main(host, port, user, key, message=None):
+    console = Console()
+    renderer = Renderer(console)
+
+    # Authenticate
+    conn = Connection(host, port)
+    try:
+        token = await conn.authenticate(user, key)
+    except AuthError as e:
+        renderer.show_error(f'Auth failed: {e}')
+        return 1
+    except Exception as e:
+        renderer.show_error(f'Cannot reach server: {e}')
+        return 1
+
+    # Session
+    cwd = os.getcwd()
+    session_id = compute_session_id(user, cwd)
+
+    # Tools
+    permissions = Permissions()
+    executor = ToolExecutor(permissions, renderer, cwd)
+
+    # Connect WebSocket
+    try:
+        await conn.connect(token)
+    except Exception as e:
+        renderer.show_error(f'WebSocket failed: {e}')
+        return 1
+
+    conn.tool_executor = executor
+
+    try:
+        if message:
+            ctx = gather_context(cwd)
+            content = ctx + '\n\n' + ' '.join(message)
+            await send_and_stream(conn, session_id, user, content, renderer)
+        else:
+            await run_repl(conn, session_id, user, renderer, executor)
+    finally:
+        await conn.close()
+
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(prog='acorn', description='CLI coding assistant connected to Anima')
+    parser.add_argument('message', nargs='*', help='One-shot message (omit for REPL mode)')
+    parser.add_argument('--host', help='Anima server host')
+    parser.add_argument('--port', type=int, help='Anima web port')
+    parser.add_argument('--user', help='Your username')
+    args = parser.parse_args()
+
+    cfg = load_config()
+    if not cfg:
+        cfg = run_setup_wizard()
+
+    host = args.host or cfg['connection']['host']
+    port = args.port or cfg['connection']['port']
+    user = args.user or cfg['connection']['user']
+    key = cfg['connection']['key']
+
+    exit_code = asyncio.run(async_main(host, port, user, key, args.message or None))
+    sys.exit(exit_code or 0)
+
+
+if __name__ == '__main__':
+    main()
