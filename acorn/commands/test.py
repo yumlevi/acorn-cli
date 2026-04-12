@@ -21,24 +21,26 @@ def test(name, description=''):
     return decorator
 
 
-@test('questions', 'Interactive question flow')
+@test('questions', 'Interactive question flow (single, multi, open, notes)')
 async def test_questions(app):
     t = app.theme_data
     questions = [
-        {'text': 'What framework are you using?', 'options': ['React', 'Vue', 'Svelte', 'Angular'], 'index': 1},
-        {'text': 'Do you want TypeScript?', 'options': ['Yes', 'No'], 'index': 2},
-        {'text': 'What is the target directory?', 'options': None, 'index': 3},
-        {'text': 'Which package manager?', 'options': ['npm', 'yarn', 'pnpm', 'bun'], 'index': 4},
+        {'text': 'What framework are you using?', 'options': ['React', 'Vue', 'Svelte', 'Angular'], 'multi': False, 'index': 1},
+        {'text': 'Which features do you need?', 'options': ['Auth', 'Database', 'API', 'WebSocket', 'File Upload'], 'multi': True, 'index': 2},
+        {'text': 'What is the target directory?', 'options': None, 'multi': False, 'index': 3},
+        {'text': 'Which CI providers to set up?', 'options': ['GitHub Actions', 'GitLab CI', 'CircleCI', 'Jenkins'], 'multi': True, 'index': 4},
+        {'text': 'Do you want TypeScript?', 'options': ['Yes', 'No'], 'multi': False, 'index': 5},
     ]
-    app._log(Text(f'  Testing interactive questions ({len(questions)} questions)', style=t['accent']))
+    app._log(Text(f'  Testing questions: single-select, multi-select, open-ended', style=t['accent']))
+    app._log(Text(f'  Tab on any question to add context/notes', style=t['muted']))
     app._scroll_bottom()
     app.app_questions = questions
 
-    def on_done(answers):
-        if answers is None:
+    def on_done(answers_data):
+        if answers_data is None:
             app._log(Text('  Test cancelled', style=t['muted']))
         else:
-            formatted = format_answers(questions, answers)
+            formatted = format_answers(questions, answers_data)
             app._log(app._themed_panel(formatted, title='[bold]Answers[/bold]', border_style=t['success']))
         app._scroll_bottom()
 
@@ -52,15 +54,20 @@ async def test_question_parse(app):
 
 QUESTIONS:
 1. What database are you using? [PostgreSQL / MySQL / SQLite / MongoDB]
-2. Do you need authentication? [Yes / No]
+2. Which features do you need? {Auth / API / WebSocket / Caching / Search}
 3. What's the expected number of users?
 4. Which cloud provider? [AWS / GCP / Azure / Self-hosted]
+5. Which monitoring tools? {Grafana / Prometheus / Datadog / Sentry}
 """
     parsed = parse_questions(sample)
     app._log(Text(f'  Parsed {len(parsed)} questions from sample text:', style=t['accent']))
     for q in parsed:
-        opts = f' [{" / ".join(q["options"])}]' if q['options'] else ' (open-ended)'
-        app._log(Text(f'    {q["index"]}. {q["text"]}{opts}', style=t['fg']))
+        kind = 'multi' if q.get('multi') else 'single' if q['options'] else 'open'
+        opts = ''
+        if q['options']:
+            bracket = '{...}' if q.get('multi') else '[...]'
+            opts = f' {bracket} {" / ".join(q["options"])}'
+        app._log(Text(f'    {q["index"]}. [{kind}] {q["text"]}{opts}', style=t['fg']))
     app._scroll_bottom()
 
 
