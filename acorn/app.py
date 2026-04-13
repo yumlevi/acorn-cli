@@ -30,7 +30,9 @@ from acorn.session import compute_session_id, project_name, get_git_branch
 from acorn.tools.executor import ToolExecutor
 from acorn.themes import get_theme
 from acorn.questions import parse_questions, QuestionScreen, format_answers
+from acorn.background import ProcessManager
 import acorn.commands.test  # noqa: F401 — registers /test command
+import acorn.commands.bg    # noqa: F401 — registers /bg command
 
 PLAN_PREFIX = (
     '[MODE: Plan only. You are in planning mode.\n'
@@ -192,7 +194,8 @@ class AcornApp(App):
         self._message_count = 0
         self._header_collapsed = False
         self._current_activity = ''
-        self._queued_message = None  # message waiting to send after generation
+        self._queued_message = None
+        self.process_manager = ProcessManager()
 
     def compose(self) -> ComposeResult:
         yield Static('', id='header-bar')
@@ -213,7 +216,7 @@ class AcornApp(App):
         ensure_local_dir(self.cwd)
 
         self.permissions = TuiPermissions(self)
-        self.executor = ToolExecutor(self.permissions, None, self.cwd)
+        self.executor = ToolExecutor(self.permissions, None, self.cwd, process_manager=self.process_manager)
         self.conn.tool_executor = self.executor
 
         self.conn.on('chat:history', self._on_history)
@@ -337,6 +340,9 @@ class AcornApp(App):
             line3.append('  ● generating...', style=t['thinking'])
             if self._queued_message:
                 line3.append('  │  1 queued', style=t.get('warning', 'yellow'))
+        bg_count = self.process_manager.running_count
+        if bg_count:
+            line3.append(f'  │  {bg_count} bg', style=t.get('accent2', t['accent']))
 
         combined = Text()
         combined.append_text(line1)
@@ -395,6 +401,20 @@ class AcornApp(App):
 
     def action_quit_check(self):
         now = time.time()
+        # If generating → first Ctrl+C stops generation
+        if self.generating:
+            from acorn.protocol import stop_message
+            asyncio.create_task(self.conn.send(stop_message(self.session_id)))
+            self.generating = False
+            self._current_activity = ''
+            self._queued_message = None
+            self._log(Text('  ⏹ Stopped', style='dim'))
+            self._update_header()
+            self._update_footer()
+            self._scroll_bottom()
+            self._last_ctrl_c = now
+            return
+        # If idle → double tap to quit
         if now - self._last_ctrl_c < 1.0:
             self.exit()
         else:
@@ -403,11 +423,9 @@ class AcornApp(App):
             self._scroll_bottom()
 
     def action_stop_generation(self):
+        """Esc also stops generation."""
         if self.generating:
-            from acorn.protocol import stop_message
-            asyncio.create_task(self.conn.send(stop_message(self.session_id)))
-            self._log(Text('  ⏹ Stopped', style='dim'))
-            self._scroll_bottom()
+            self.action_quit_check()
 
     # ── Input handling ─────────────────────────────────────────────
 
@@ -530,10 +548,15 @@ class AcornApp(App):
             help_table.add_row('/status', 'Connection info')
             help_table.add_row('/theme [name]', 'Switch theme')
             help_table.add_row('/approve-all', 'Auto-approve tools')
+            help_table.add_row('/test [name]', 'Run UI tests')
+            help_table.add_row('/bg', 'Background processes')
+            help_table.add_row('/bg run <cmd>', 'Run command in background')
+            help_table.add_row('/bg <id>', 'View process output')
+            help_table.add_row('/bg kill <id>', 'Kill a process')
             help_table.add_row('', '')
+            help_table.add_row('Ctrl+C', 'Stop generation (×2 to quit)')
             help_table.add_row('Ctrl+P', 'Toggle plan/execute')
             help_table.add_row('Esc', 'Stop generation')
-            help_table.add_row('Ctrl+C ×2', 'Quit')
             self._log(Panel(help_table, title='Commands', border_style=t['accent'], style=f'on {t["bg_panel"]}'))
         else:
             # Check command registry (for /test and other registered commands)

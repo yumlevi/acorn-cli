@@ -21,10 +21,11 @@ SERVER_TOOLS = {
 
 
 class ToolExecutor:
-    def __init__(self, permissions, renderer, cwd: str):
+    def __init__(self, permissions, renderer, cwd: str, process_manager=None):
         self.permissions = permissions
         self.renderer = renderer
         self.cwd = cwd
+        self.process_manager = process_manager
 
     async def execute(self, name: str, input: dict) -> "dict | None":
         """Execute a tool locally. Returns None to signal server-side fallback."""
@@ -43,7 +44,7 @@ class ToolExecutor:
         elif name == 'edit_file':
             return file_ops.edit_file(input, self.cwd)
         elif name == 'exec':
-            return await shell.execute(input, self.cwd)
+            return await shell.execute(input, self.cwd, process_manager=self.process_manager)
         elif name == 'glob':
             return search.glob_search(input, self.cwd)
         elif name == 'grep':
