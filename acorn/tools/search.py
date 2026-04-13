@@ -55,7 +55,7 @@ def grep_search(input: dict, cwd: str) -> dict:
                             if regex.search(line):
                                 results.append({'file': rel, 'line': i, 'text': line.rstrip()[:200]})
                                 if len(results) >= 200:
-                                    return {'results': results, 'truncated': True}
+                                    return {'results': results, 'count': len(results), 'truncated': True}
                 except Exception:
                     continue
     except Exception as e:

@@ -72,6 +72,10 @@ class ProcessManager:
         except Exception:
             pass
         finally:
+            try:
+                await bp.proc.wait()
+            except Exception:
+                pass
             bp.exit_code = bp.proc.returncode
             bp.ended = time.time()
 
