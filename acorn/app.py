@@ -29,8 +29,7 @@ from acorn.protocol import chat_message
 from acorn.session import compute_session_id, project_name, get_git_branch
 from acorn.tools.executor import ToolExecutor
 from acorn.themes import get_theme
-from acorn.questions import parse_questions, QuestionScreen, format_answers
-from acorn.plan_approval import PlanApprovalScreen
+from acorn.questions import parse_questions, format_answers
 from acorn.background import ProcessManager
 import acorn.commands.test  # noqa: F401 — registers /test command
 import acorn.commands.bg    # noqa: F401 — registers /bg command
@@ -225,6 +224,14 @@ class AcornApp(App):
         self._header_collapsed = False
         self._current_activity = ''
         self._queued_message = None
+        self._answering_questions = False
+        self._pending_questions = []
+        self._pending_answers = {}
+        self._pending_notes = {}
+        self._current_question_idx = 0
+        self._awaiting_plan_decision = False
+        self._awaiting_plan_feedback = False
+        self._last_plan_text = ''
         self.process_manager = ProcessManager()
 
     def compose(self) -> ComposeResult:
@@ -497,6 +504,23 @@ class AcornApp(App):
         # Slash commands always run immediately
         if text.startswith('/'):
             await self._handle_command(text)
+            return
+
+        # If answering inline questions
+        if getattr(self, '_answering_questions', False):
+            self._handle_question_answer(text)
+            return
+
+        # If awaiting plan decision (1/2/3 or feedback text)
+        if getattr(self, '_awaiting_plan_decision', False):
+            # If we asked for feedback text after picking "2"
+            if getattr(self, '_awaiting_plan_feedback', False):
+                self._awaiting_plan_feedback = False
+                self._awaiting_plan_decision = False
+                # Re-enter with the actual feedback
+                self._handle_plan_decision(text)
+            else:
+                self._handle_plan_decision(text)
             return
 
         # If generating, queue this message and show it as pending
@@ -798,12 +822,17 @@ class AcornApp(App):
         if questions and len(questions) >= 1:
             self._log(Text(f'  Agent has {len(questions)} question(s) for you', style=t['accent2']))
             self._scroll_bottom()
-            self.app_questions = questions
-            # Schedule modal push on next tick to avoid race with WebSocket callback
-            self.call_later(self._push_question_screen, questions, t)
+            # Show questions inline and enter question-answering mode
+            self._pending_questions = questions
+            self._pending_answers = {}
+            self._pending_notes = {}
+            self._current_question_idx = 0
+            self._log(Text(''))
+            self._show_current_question()
         elif self.plan_mode and response and ('PLAN_READY' in response or len(response) > 500):
             self._last_plan_text = response
-            self.call_later(self._push_plan_screen, t, response)
+            self._awaiting_plan_decision = True
+            self._show_plan_choices()
 
         self._stream_buffer = ''
         self._response_text = []
@@ -815,56 +844,125 @@ class AcornApp(App):
             self._queued_message = None
             asyncio.create_task(self._send_message(queued))
 
-    def _push_question_screen(self, questions, t):
-        """Push question modal — deferred to avoid WebSocket callback race."""
-        try:
-            self.push_screen(
-                QuestionScreen(questions, t),
-                callback=self._on_questions_answered,
-            )
-        except Exception as e:
-            # Fallback: show questions inline
-            self._log(Text(f'  (Question modal unavailable: {e})', style=t.get('muted', 'dim')))
-            for q in questions:
-                opts = ''
-                if q['options']:
-                    bracket = '{...}' if q.get('multi') else '[...]'
-                    opts = f' {bracket}'
-                self._log(Text(f'  {q["index"]}. {q["text"]}{opts}', style=t.get('fg', '')))
-            self._log(Text('  Type your answers as a message', style=t.get('muted', 'dim')))
-            self._scroll_bottom()
+    def _show_current_question(self):
+        """Show the current question inline in the transcript."""
+        questions = getattr(self, '_pending_questions', [])
+        idx = getattr(self, '_current_question_idx', 0)
+        if idx >= len(questions):
+            # All questions answered — send answers back
+            self._send_question_answers()
+            return
+        q = questions[idx]
+        t = self.theme_data
+        total = len(questions)
 
-    def _push_plan_screen(self, t, response):
-        """Push plan approval modal — deferred to avoid WebSocket callback race."""
-        try:
-            self.push_screen(
-                PlanApprovalScreen(t, response),
-                callback=self._on_plan_decision,
-            )
-        except Exception as e:
-            self._log(Text(f'  (Plan modal unavailable: {e})', style=t.get('muted', 'dim')))
-            self._log(Text('  Type "execute" to run, or provide feedback', style=t.get('accent2', t.get('accent', ''))))
-            self._scroll_bottom()
+        header = Text()
+        header.append(f'  Question {idx + 1}/{total}: ', style=f'bold {t["accent"]}')
+        header.append(q['text'], style='bold')
+        self._log(header)
 
-    def _on_plan_decision(self, result):
-        """Callback from plan approval modal."""
-        if result is None:
-            result = ('cancel', None)
-        action, feedback = result
+        if q['options']:
+            for i, opt in enumerate(q['options']):
+                self._log(Text(f'    {i + 1}. {opt}', style=t['fg']))
+            if q.get('multi'):
+                self._log(Text('  Type numbers separated by commas (e.g. 1,3,4)', style=t['muted']))
+            else:
+                self._log(Text('  Type a number or your own answer', style=t['muted']))
+        else:
+            self._log(Text('  Type your answer', style=t['muted']))
+
+        self._scroll_bottom()
+        # Set flag so on_input_submitted knows to handle as question answer
+        self._answering_questions = True
+
+    def _handle_question_answer(self, text):
+        """Process an answer to the current inline question."""
+        questions = self._pending_questions
+        idx = self._current_question_idx
+        q = questions[idx]
+
+        if q['options'] and q.get('multi'):
+            # Multi-select: parse comma-separated numbers
+            try:
+                indices = [int(x.strip()) - 1 for x in text.split(',')]
+                selected = [q['options'][i] for i in indices if 0 <= i < len(q['options'])]
+                self._pending_answers[idx] = selected if selected else [text]
+            except (ValueError, IndexError):
+                self._pending_answers[idx] = [text]
+        elif q['options'] and text.isdigit():
+            # Single select by number
+            num = int(text) - 1
+            if 0 <= num < len(q['options']):
+                self._pending_answers[idx] = q['options'][num]
+            else:
+                self._pending_answers[idx] = text
+        else:
+            self._pending_answers[idx] = text
+
+        t = self.theme_data
+        answer = self._pending_answers[idx]
+        display = ', '.join(answer) if isinstance(answer, list) else str(answer)
+        self._log(Text(f'  → {display}', style=t['success']))
+
+        self._current_question_idx += 1
+        self._show_current_question()
+
+    def _send_question_answers(self):
+        """Format and send all answers back to the agent."""
+        self._answering_questions = False
+        questions = self._pending_questions
+        answers_data = {'answers': self._pending_answers, 'notes': self._pending_notes}
+        formatted = format_answers(questions, answers_data)
         t = self.theme_data
 
-        if action == 'execute':
-            # Save plan locally
+        self._log(Text(''))
+        self._log(self._themed_panel(formatted, title=f'[bold]{self.user}[/bold]', border_style=t['prompt_user']))
+        self._scroll_bottom()
+
+        self._stream_buffer = ''
+        self._response_text = []
+        self._tool_lines = []
+        self.generating = True
+        self._update_footer()
+        self._update_header()
+        asyncio.create_task(
+            self.conn.send(chat_message(self.session_id, formatted, self.user))
+        )
+
+    def _show_plan_choices(self):
+        """Show plan approval options inline."""
+        t = self.theme_data
+        self._log(Text(''))
+        self._log(Panel(
+            Text.assemble(
+                ('  1. ', f'bold {t["accent"]}'), ('▶ Execute plan\n', t['success']),
+                ('  2. ', f'bold {t["accent"]}'), ('✎ Revise with feedback\n', t['fg']),
+                ('  3. ', f'bold {t["accent"]}'), ('✕ Cancel\n', t['muted']),
+            ),
+            title='[bold]Plan Ready[/bold]',
+            border_style=t['accent'],
+            style=f'on {t["bg_panel"]}',
+            padding=(0, 1),
+        ))
+        self._log(Text('  Type 1, 2, or 3 (or type feedback directly)', style=t['muted']))
+        self._scroll_bottom()
+
+    def _handle_plan_decision(self, text):
+        """Handle user input when awaiting plan decision."""
+        self._awaiting_plan_decision = False
+        t = self.theme_data
+
+        if text == '1' or text.lower().startswith('exec'):
+            # Execute the plan
             from acorn.cli import _save_plan
             plan_path = _save_plan(self.cwd, getattr(self, '_last_plan_text', ''))
             if plan_path:
                 self._log(self._themed_text(f'  Plan saved to {plan_path}', style=t['muted']))
 
-            # Switch to execute mode and tell the agent to proceed
             self.plan_mode = False
             self._update_mode_bar()
             self._update_header()
-            self._log(self._themed_text(f'  ▶ Executing plan...', style=t['success']))
+            self._log(self._themed_text('  ▶ Executing plan...', style=t['success']))
             self._scroll_bottom()
 
             self._stream_buffer = ''
@@ -877,8 +975,21 @@ class AcornApp(App):
                 self.conn.send(chat_message(self.session_id, PLAN_EXECUTE_MSG, self.user))
             )
 
-        elif action == 'feedback':
-            # Stay in plan mode, send feedback to revise
+        elif text == '3' or text.lower().startswith('cancel'):
+            self._log(self._themed_text('  Plan discarded', style=t['muted']))
+            self._scroll_bottom()
+
+        else:
+            # Anything else (including "2" or free text) is feedback
+            feedback = text if text != '2' else ''
+            if text == '2':
+                # Just picked "revise" — ask for the actual feedback
+                self._log(Text('  Type your feedback:', style=t['muted']))
+                self._awaiting_plan_decision = True  # stay in this mode for next input
+                self._awaiting_plan_feedback = True
+                self._scroll_bottom()
+                return
+
             self._log(self._themed_panel(
                 feedback,
                 title=f'[bold]{self.user}[/bold] [dim](feedback)[/dim]',
@@ -886,7 +997,7 @@ class AcornApp(App):
             ))
             self._scroll_bottom()
 
-            feedback_msg = f'[PLAN FEEDBACK: The user wants you to revise the plan based on this feedback. Stay in plan mode.]\n\n{feedback}'
+            feedback_msg = f'[PLAN FEEDBACK: Revise the plan based on this feedback. Stay in plan mode.]\n\n{feedback}'
             self._stream_buffer = ''
             self._response_text = []
             self._tool_lines = []
@@ -896,31 +1007,6 @@ class AcornApp(App):
             asyncio.create_task(
                 self.conn.send(chat_message(self.session_id, feedback_msg, self.user))
             )
-
-        elif action == 'cancel':
-            self._log(self._themed_text('  Plan discarded', style=t['muted']))
-            self._scroll_bottom()
-
-    def _on_questions_answered(self, answers):
-        """Callback when user finishes the question modal."""
-        if answers is None:
-            self._log(Text('  Questions cancelled', style='dim'))
-            self._scroll_bottom()
-            return
-        # Format and send answers back to the agent
-        questions = getattr(self, 'app_questions', [])
-        formatted = format_answers(questions, answers)
-        t = self.theme_data
-        self._log(self._themed_panel(formatted, title=f'[bold]{self.user}[/bold]', border_style=t['prompt_user']))
-        self._scroll_bottom()
-        # Send to agent
-        self._stream_buffer = ''
-        self._response_text = []
-        self._tool_lines = []
-        self.generating = True
-        asyncio.create_task(
-            self.conn.send(chat_message(self.session_id, formatted, self.user))
-        )
 
     async def _on_error(self, msg):
         self.generating = False
