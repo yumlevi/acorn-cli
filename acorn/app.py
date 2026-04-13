@@ -86,6 +86,30 @@ PLAN_EXECUTE_MSG = (
 )
 
 
+class MessageInput(TextArea):
+    """TextArea that submits on Enter and inserts newline on Ctrl+Enter."""
+
+    BINDINGS = [
+        Binding('enter', 'submit', 'Send', show=False),
+        Binding('ctrl+enter', 'newline', 'New line', show=False),
+    ]
+
+    class Submitted(TextArea.Changed):
+        """Fired when user presses Enter to submit."""
+        def __init__(self, text_area, text):
+            super().__init__(text_area)
+            self.text = text
+
+    def action_submit(self):
+        text = self.text.strip()
+        if text:
+            self.post_message(self.Submitted(self, text))
+            self.clear()
+
+    def action_newline(self):
+        self.insert('\n')
+
+
 class FocusableStatic(Static):
     """A Static widget that can receive focus for key events.
     Routes key events to the app's question handler."""
@@ -194,13 +218,23 @@ class AcornApp(App):
         border-top: solid $accent;
     }
     #user-input {
-        height: 3;
-        max-height: 10;
+        min-height: 3;
+        height: auto;
+        max-height: 12;
         background: $surface;
         color: $foreground;
         border-top: solid $accent;
     }
     #user-input.hidden {
+        display: none;
+    }
+    #paste-indicator {
+        height: 1;
+        background: $surface;
+        color: $accent;
+        padding: 0 1;
+    }
+    #paste-indicator.hidden {
         display: none;
     }
     TextArea {
@@ -329,7 +363,8 @@ class AcornApp(App):
         yield SelectableLog(id='transcript', wrap=True, highlight=True, markup=True)
         with Vertical(id='bottom-area'):
             yield Static('', id='autocomplete', classes='hidden')
-            yield TextArea('', id='user-input', language=None, show_line_numbers=False, soft_wrap=True)
+            yield Static('', id='paste-indicator', classes='hidden')
+            yield MessageInput('', id='user-input', language=None, show_line_numbers=False, soft_wrap=True)
             yield FocusableStatic('', id='question-selector', classes='hidden')
             yield Input(placeholder='Add context/notes (Tab to go back)...', id='note-input', classes='hidden')
             yield Static('', id='footer-bar')
@@ -356,7 +391,7 @@ class AcornApp(App):
         self.conn.on('code:diff', self._on_code_diff)
         self.conn.on('chat:start', self._on_start)
 
-        self.query_one('#user-input', TextArea).focus()
+        self.query_one('#user-input', MessageInput).focus()
 
         # Run environment audit at startup — cached for the session
         from acorn.context import gather_environment, detect_project_type
@@ -385,24 +420,15 @@ class AcornApp(App):
                 self.conn.send(json.dumps({'type': 'chat:history-request', 'sessionId': self.session_id}))
             )
 
-    def on_key(self, event):
-        """Route keys: TextArea submit, question selector, autocomplete."""
-        # Enter in TextArea → submit (Shift+Enter for newline handled by TextArea)
-        if event.key == 'enter' and not event.shift:
-            try:
-                ta = self.query_one('#user-input', TextArea)
-                if ta.has_focus and not getattr(self, '_answering_questions', False):
-                    text = ta.text.strip()
-                    if text:
-                        ta.clear()
-                        # Route through input_submitted logic
-                        asyncio.create_task(self._handle_textarea_submit(text))
-                        event.prevent_default()
-                        event.stop()
-                        return
-            except NoMatches:
-                pass
+    def on_message_input_submitted(self, event: MessageInput.Submitted):
+        """Handle Enter from the MessageInput widget."""
+        self._autocomplete_matches = []
+        self._hide_widget('#autocomplete')
+        self._hide_widget('#paste-indicator')
+        asyncio.create_task(self._handle_textarea_submit(event.text))
 
+    def on_key(self, event):
+        """Route keys: question selector, autocomplete."""
         # Question selector mode — intercept arrow keys, space, tab, enter, escape
         if getattr(self, '_answering_questions', False) and not getattr(self, '_q_open_ended', False) and not getattr(self, '_q_noting', False):
             q = self._pending_questions[self._current_question_idx] if self._current_question_idx < len(self._pending_questions) else None
@@ -448,7 +474,7 @@ class AcornApp(App):
                 # Fill the selected command into the input
                 cmd, _ = self._autocomplete_matches[self._autocomplete_selected]
                 try:
-                    inp = self.query_one('#user-input', TextArea)
+                    inp = self.query_one('#user-input', MessageInput)
                     inp.clear()
                     inp.insert(cmd + ' ')
                 except NoMatches:
@@ -469,7 +495,7 @@ class AcornApp(App):
         if event.key in ('up', 'down', 'left', 'right', 'escape', 'tab', 'ctrl+p', 'ctrl+c'):
             return
         try:
-            inp = self.query_one('#user-input', TextArea)
+            inp = self.query_one('#user-input', MessageInput)
             if not inp.has_focus and inp.display:
                 inp.focus()
         except NoMatches:
@@ -706,12 +732,32 @@ class AcornApp(App):
     # ── Input handling ─────────────────────────────────────────────
 
     def on_text_area_changed(self, event: TextArea.Changed):
-        """Show autocomplete popup when typing slash commands in TextArea."""
+        """Show autocomplete + paste indicator on TextArea changes."""
         if event.text_area.id != 'user-input':
             return
         text = event.text_area.text
-        if text.startswith('/') and len(text) >= 1:
-            query = text.lower()
+
+        # Paste indicator — show line count if content exceeds visible area
+        line_count = text.count('\n') + 1
+        char_count = len(text)
+        if line_count > 10 or char_count > 500:
+            t = self.theme_data
+            try:
+                indicator = self.query_one('#paste-indicator', Static)
+                indicator.update(Text(
+                    f'  📋 {line_count} lines · {char_count:,} chars (Enter to send)',
+                    style=t['accent'],
+                ))
+                self._show_widget('#paste-indicator')
+            except NoMatches:
+                pass
+        else:
+            self._hide_widget('#paste-indicator')
+
+        # Autocomplete for slash commands
+        first_line = text.split('\n')[0] if text else ''
+        if first_line.startswith('/') and '\n' not in text:
+            query = first_line.lower()
             matches = [(cmd, desc) for cmd, desc in self._slash_commands if cmd.startswith(query)]
             self._autocomplete_matches = matches
             self._autocomplete_selected = 0
@@ -1191,7 +1237,7 @@ class AcornApp(App):
             self._hide_widget('#question-selector')
             self._show_widget('#user-input')
             try:
-                inp = self.query_one('#user-input', TextArea)
+                inp = self.query_one('#user-input', MessageInput)
                 inp.clear()
                 inp.focus()
             except NoMatches:
@@ -1255,7 +1301,7 @@ class AcornApp(App):
         self._hide_widget('#note-input')
         self._show_widget('#user-input')
         try:
-            inp = self.query_one('#user-input', TextArea)
+            inp = self.query_one('#user-input', MessageInput)
             inp.clear()
             inp.focus()
         except NoMatches:
