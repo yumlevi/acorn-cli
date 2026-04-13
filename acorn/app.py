@@ -22,7 +22,7 @@ from rich.table import Table
 
 from acorn.config import save_last_session, ensure_local_dir, load_config, save_config
 from acorn.connection import Connection, AuthError
-from acorn.context import gather_context
+from acorn.context import gather_context, ContextManager
 from acorn.permissions import TuiPermissions
 from acorn.protocol import chat_message
 from acorn.session import compute_session_id, project_name, get_git_branch
@@ -31,6 +31,7 @@ from acorn.themes import get_theme
 from acorn.questions import parse_questions, format_answers
 from acorn.background import ProcessManager
 from acorn.logging import SessionLogger, cleanup_old_logs
+from acorn.session_writer import SessionWriter, cleanup_old_sessions
 from acorn.constants import PLAN_PREFIX, PLAN_EXECUTE_MSG, LOGO_FULL, LOGO_MINI, SLASH_COMMANDS
 from acorn.ui.widgets import MessageInput, FocusableStatic, SelectableLog
 from acorn.ui.panels import themed_panel, themed_text, user_panel, bot_panel, error_panel
@@ -204,9 +205,16 @@ class AcornApp(WSEventsMixin, QuestionsMixin, PlanMixin, App):
         self.theme_data = get_theme(theme_name)
         self.cwd = cwd
         self.plan_mode = False
-        self.context_sent = False
+        self.context_sent = False  # legacy flag, kept for compat
+        self.ctx_manager = ContextManager(cwd)
         self._is_continue = is_continue
         self._generating = False
+
+        # State machine — tracks overall app state
+        from acorn.state import StateMachine, AppState
+        self.sm = StateMachine()
+        self._AppState = AppState
+        self.sm.on_change(lambda old, new: self.slog.debug('state', f'{old.name} → {new.name}') if hasattr(self, 'slog') else None)
         self._stream_buffer = ''
         self._last_ctrl_c = 0
         self._response_text = []
@@ -229,7 +237,9 @@ class AcornApp(WSEventsMixin, QuestionsMixin, PlanMixin, App):
         self._session_start = __import__('time').time()
         self.slog = SessionLogger(session_id, user, cwd)
         self.slog.info('init', f'AcornApp created theme={theme_name} continue={is_continue}')
+        self.session_writer = SessionWriter(session_id)
         cleanup_old_logs(keep_days=14)
+        cleanup_old_sessions(keep_days=30)
         self._autocomplete_selected = 0
         self._autocomplete_matches = []
         self._slash_commands = SLASH_COMMANDS
@@ -469,9 +479,13 @@ class AcornApp(WSEventsMixin, QuestionsMixin, PlanMixin, App):
     def generating(self, value):
         was = self._generating
         self._generating = value
+        # Sync state machine
         if value and not was:
+            self.sm.transition(self._AppState.GENERATING, force=True)
             self._start_spinner()
         elif not value and was:
+            if self.sm.state in (self._AppState.GENERATING, self._AppState.STREAMING, self._AppState.TOOL_PENDING):
+                self.sm.transition(self._AppState.IDLE, force=True)
             self._stop_spinner()
 
     def _start_spinner(self):
@@ -545,6 +559,7 @@ class AcornApp(WSEventsMixin, QuestionsMixin, PlanMixin, App):
         if now - self._last_ctrl_c < 1.0:
             self.slog.session_end(self._message_count, __import__('time').time() - self._session_start)
             self.slog.close()
+            self.session_writer.close()
             self.exit()
         else:
             self._last_ctrl_c = now
@@ -693,14 +708,14 @@ class AcornApp(WSEventsMixin, QuestionsMixin, PlanMixin, App):
     async def _send_message(self, text):
         """Send a message to the agent."""
         self.slog.info('send', f'sending {len(text)} chars', plan_mode=self.plan_mode)
+        self.session_writer.write_user(text)
         t = self.theme_data
         self._log(self._themed_panel(text, title=f'[bold]{self.user}[/bold]', border_style=t['prompt_user']))
 
-        content = text
-        if not self.context_sent:
-            ctx = gather_context(self.cwd)
-            content = ctx + '\n\n' + text
-            self.context_sent = True
+        # Smart context — full on first message, delta after
+        ctx = self.ctx_manager.get_context()
+        content = (ctx + '\n\n' + text) if ctx else text
+        self.context_sent = True  # legacy compat
 
         if self.plan_mode:
             content = PLAN_PREFIX + content
@@ -729,6 +744,7 @@ class AcornApp(WSEventsMixin, QuestionsMixin, PlanMixin, App):
         if cmd in ('/quit', '/exit'):
             self.slog.session_end(self._message_count, __import__('time').time() - self._session_start)
             self.slog.close()
+            self.session_writer.close()
             self.exit()
         elif cmd == '/stop':
             self.action_quit_check() if self.generating else self._log(Text('  Nothing to stop', style=t['muted']))
@@ -736,6 +752,7 @@ class AcornApp(WSEventsMixin, QuestionsMixin, PlanMixin, App):
             from acorn.protocol import clear_message
             await self.conn.send(clear_message(self.session_id))
             self.context_sent = False
+            self.ctx_manager.reset()
             try:
                 self.query_one('#transcript', SelectableLog).clear()
             except NoMatches:

@@ -261,3 +261,61 @@ def gather_context(cwd: str) -> str:
         parts.append(f'Project tree:\n{tree}')
 
     return '\n\n'.join(parts)
+
+
+class ContextManager:
+    """Manages context enrichment — full on first message, deltas after."""
+
+    def __init__(self, cwd: str):
+        self.cwd = cwd
+        self._full_context = None
+        self._sent = False
+        self._last_branch = None
+        self._last_status = None
+
+    def get_context(self) -> str:
+        """Get context to prepend to a message. Full on first call, delta after."""
+        if not self._sent:
+            self._sent = True
+            self._full_context = gather_context(self.cwd)
+            self._snapshot()
+            return self._full_context
+
+        delta = self._compute_delta()
+        return delta
+
+    def reset(self):
+        """Force full context on next message (e.g. after /clear)."""
+        self._sent = False
+        self._full_context = None
+
+    def _snapshot(self):
+        """Snapshot current git state for delta comparison."""
+        git_root = find_git_root(self.cwd)
+        if git_root:
+            self._last_branch = _git('branch --show-current', git_root)
+            self._last_status = _git('status --short', git_root)
+        else:
+            self._last_branch = None
+            self._last_status = None
+
+    def _compute_delta(self) -> str:
+        """Compute what changed since last snapshot."""
+        git_root = find_git_root(self.cwd)
+        if not git_root:
+            return ''
+
+        changes = []
+        branch = _git('branch --show-current', git_root)
+        if branch != self._last_branch:
+            changes.append(f'[Context update] Branch changed: {self._last_branch} → {branch}')
+            self._last_branch = branch
+
+        status = _git('status --short', git_root)
+        if status != self._last_status:
+            new_lines = set(status.split('\n')) - set((self._last_status or '').split('\n'))
+            if new_lines:
+                changes.append(f'[Context update] Git changes:\n' + '\n'.join(sorted(new_lines)[:10]))
+            self._last_status = status
+
+        return '\n'.join(changes) if changes else ''

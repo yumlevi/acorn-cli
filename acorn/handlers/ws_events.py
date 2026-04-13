@@ -157,6 +157,9 @@ class WSEventsMixin:
                       input_tokens=usage.get('input_tokens'), output_tokens=usage.get('output_tokens'))
         if response.strip():
             self._last_response = response
+            # Persist to local session file
+            if hasattr(self, 'session_writer'):
+                self.session_writer.write_assistant(response, usage=usage, iterations=msg.get('iterations'))
         t = self.theme_data
 
         # Flush any remaining streamed text
@@ -213,6 +216,8 @@ class WSEventsMixin:
         t = self.theme_data
         error = msg.get('error', 'Unknown error')
         self.slog.error_event(error)
+        if hasattr(self, 'session_writer'):
+            self.session_writer.write_error(error)
         self._log(Panel(
             Text(error, style=t['error']),
             title='[bold]Error[/bold]',
