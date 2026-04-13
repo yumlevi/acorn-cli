@@ -7,13 +7,15 @@ ALWAYS_SAFE = {'read_file', 'glob', 'grep'}
 
 # Patterns that ALWAYS require approval even in auto mode
 DANGEROUS_PATTERNS = [
-    r'\brm\s+(-rf?|--recursive)', r'\brm\s+/', r'rmdir\b',
+    r'\brm\s+(-rf?|--recursive)', r'\brm\s+/', r'rmdir\s+/',
     r'\bmkfs\b', r'>\s*/dev/', r'dd\s+if=',
-    r'chmod\s+(-R\s+)?777', r'chown\s+-R',
+    r'chmod\s+(-R\s+)?777', r'chown\s+-R\s+.*/',
     r'\bgit\s+push\s+.*--force', r'\bgit\s+reset\s+--hard',
     r'\bdrop\s+table\b', r'\bdrop\s+database\b',
-    r'\btruncate\b', r'\bformat\b',
-    r':()\{', r'curl.*\|\s*sh', r'wget.*\|\s*sh',
+    r'\btruncate\s+table\b',
+    r'\bmkfs\.\w+\b', r'\bfdisk\b', r'\bparted\b',
+    r':()\{', r'curl.*\|\s*(ba)?sh', r'wget.*\|\s*(ba)?sh',
+    r'\bkill\s+-9\b',
 ]
 
 DANGEROUS_RE = [re.compile(p, re.IGNORECASE) for p in DANGEROUS_PATTERNS]
