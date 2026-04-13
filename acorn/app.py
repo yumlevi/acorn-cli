@@ -24,7 +24,7 @@ from rich.console import Group
 from acorn.config import save_last_session, ensure_local_dir, load_config, save_config
 from acorn.connection import Connection, AuthError
 from acorn.context import gather_context
-from acorn.permissions import Permissions
+from acorn.permissions import TuiPermissions
 from acorn.protocol import chat_message
 from acorn.session import compute_session_id, project_name, get_git_branch
 from acorn.tools.executor import ToolExecutor
@@ -479,6 +479,10 @@ class AcornApp(App):
             line3.append(f'  {frame} {activity}', style=t['thinking'])
             if self._queued_message:
                 line3.append('  │  1 queued', style=t.get('warning', 'yellow'))
+        if not self.generating:
+            perm_mode = getattr(self.permissions, 'mode', 'ask')
+            mode_icons = {'auto': '⚡', 'ask': '🔒', 'locked': '🚫'}
+            line3.append(f'  │  {mode_icons.get(perm_mode, "")} {perm_mode}', style=t.get('muted', 'dim'))
         bg_count = self.process_manager.running_count
         if bg_count:
             line3.append(f'  │  {bg_count} bg', style=t.get('accent2', t['accent']))
@@ -737,8 +741,28 @@ class AcornApp(App):
             else:
                 self._log(Text(f'  Current: {self.theme_data["name"]}  Available: {", ".join(available)}', style='dim'))
         elif cmd == '/approve-all':
-            self.permissions.approve_all = True
-            self._log(Text('  ⚡ All tools auto-approved', style='yellow'))
+            self.permissions.mode = 'auto'
+            self._log(Text('  ⚡ Auto mode — all non-dangerous tools auto-approved', style='yellow'))
+        elif cmd == '/mode':
+            if args in ('auto', 'ask', 'locked'):
+                self.permissions.mode = args
+                descs = {'auto': 'auto-approve (dangerous still asks)', 'ask': 'ask for each tool', 'locked': 'deny all writes/exec'}
+                self._log(Text(f'  Mode → {args}: {descs[args]}', style=t['accent']))
+                if self.permissions.session_rules:
+                    self._log(Text(f'  Session rules: {", ".join(sorted(self.permissions.session_rules))}', style=t['muted']))
+            elif args == 'rules':
+                rules = self.permissions.session_rules
+                if rules:
+                    for r in sorted(rules):
+                        self._log(Text(f'    {r}', style=t['fg']))
+                else:
+                    self._log(Text('  No session rules', style=t['muted']))
+            else:
+                self._log(Text(f'  Current: {self.permissions.mode}', style=t['accent']))
+                self._log(Text(f'  /mode auto     Auto-approve (dangerous still asks)', style=t['muted']))
+                self._log(Text(f'  /mode ask      Prompt for every tool', style=t['muted']))
+                self._log(Text(f'  /mode locked   Deny all writes/exec', style=t['muted']))
+                self._log(Text(f'  /mode rules    Show session allow rules', style=t['muted']))
         elif cmd == '/help':
             help_table = Table.grid(padding=(0, 2))
             help_table.add_column(style='bold cyan', min_width=18)
@@ -749,7 +773,8 @@ class AcornApp(App):
             help_table.add_row('/plan', 'Toggle plan mode')
             help_table.add_row('/status', 'Connection info')
             help_table.add_row('/theme [name]', 'Switch theme')
-            help_table.add_row('/approve-all', 'Auto-approve tools')
+            help_table.add_row('/mode [auto/ask/locked]', 'Tool approval mode')
+            help_table.add_row('/approve-all', 'Shortcut for /mode auto')
             help_table.add_row('/test [name]', 'Run UI tests')
             help_table.add_row('/bg', 'Background processes')
             help_table.add_row('/bg run <cmd>', 'Run command in background')
@@ -1124,7 +1149,7 @@ class AcornApp(App):
             self._q_plan_approval = False
             self._answering_questions = False
             self._exit_question_mode()
-            choice = self._q_selected  # 0=execute, 1=revise, 2=cancel
+            choice = self._q_selected
             if choice == 0:
                 self._log(Text(f'  → Execute', style=t['success']))
                 self._handle_plan_decision('1')
@@ -1135,6 +1160,38 @@ class AcornApp(App):
                 self._log(Text(f'  → Cancel', style=t['muted']))
                 self._handle_plan_decision('3')
             self._scroll_bottom()
+            return
+
+        # Permission approval mode — resolve the permission future
+        if getattr(self, '_q_permission_mode', False):
+            self._q_permission_mode = False
+            self._answering_questions = False
+            self._exit_question_mode()
+            choice = self._q_selected
+            dangerous = getattr(self, '_permission_dangerous', False)
+            rule = getattr(self, '_permission_rule', '')
+
+            if dangerous:
+                # Only "Allow (once)" or "Deny"
+                allowed = (choice == 0)
+            else:
+                # "Allow", "Allow all <rule>", "Deny"
+                allowed = (choice in (0, 1))
+                if choice == 1 and rule:
+                    # Add session rule
+                    self.permissions.session_rules.add(rule)
+                    self._log(Text(f'  ✓ Rule added for session: {rule}', style=t['success']))
+
+            if allowed:
+                self._log(Text(f'  ✓ Allowed', style=t['success']))
+            else:
+                self._log(Text(f'  ✗ Denied', style=t['warning']))
+            self._scroll_bottom()
+
+            self._permission_result = allowed
+            event = getattr(self, '_permission_event', None)
+            if event:
+                event.set()
             return
 
         note = self._pending_notes.get(idx)
@@ -1325,26 +1382,4 @@ class AcornApp(App):
         pass
 
 
-class TuiPermissions:
-    """Permissions that work with the TUI."""
-    def __init__(self, app):
-        self.app = app
-        self.approve_all = False
-
-    def is_auto_approved(self, tool_name, input):
-        if self.approve_all:
-            return True
-        return tool_name in {'read_file', 'glob', 'grep'}
-
-    async def prompt(self, tool_name, input):
-        if self.approve_all:
-            return True
-        summary = tool_name
-        if tool_name == 'exec':
-            summary = f'exec: {input.get("command", "")[:80]}'
-        elif tool_name in ('write_file', 'edit_file'):
-            summary = f'{tool_name}: {input.get("path", "")}'
-        t = self.app.theme_data
-        self.app._log(Text(f'  ⚡ Auto-approved: {summary}', style=t['warning']))
-        self.app._scroll_bottom()
-        return True
+    # TuiPermissions is now in acorn/permissions.py
