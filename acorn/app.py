@@ -19,7 +19,6 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
-from rich.console import Group
 
 from acorn.config import save_last_session, ensure_local_dir, load_config, save_config
 from acorn.connection import Connection, AuthError
@@ -32,152 +31,16 @@ from acorn.themes import get_theme
 from acorn.questions import parse_questions, format_answers
 from acorn.background import ProcessManager
 from acorn.logging import SessionLogger, cleanup_old_logs
+from acorn.constants import PLAN_PREFIX, PLAN_EXECUTE_MSG, LOGO_FULL, LOGO_MINI, SLASH_COMMANDS
+from acorn.ui.widgets import MessageInput, FocusableStatic, SelectableLog
+from acorn.ui.panels import themed_panel, themed_text, user_panel, bot_panel, error_panel
 import acorn.commands.test  # noqa: F401 — registers /test command
 import acorn.commands.bg    # noqa: F401 — registers /bg command
 
-PLAN_PREFIX = (
-    '[MODE: Plan only. You are in planning mode. Follow these phases in order:\n\n'
-
-    'PHASE 1 — ENVIRONMENT AUDIT:\n'
-    'The context above includes the local environment (OS, installed tools, runtimes). '
-    'Review what is available. If the task requires tools/runtimes not installed, note them. '
-    'Use exec to check versions or configs if needed (e.g. `node --version`, `cat package.json`).\n\n'
-
-    'PHASE 2 — CODEBASE SCAN:\n'
-    'Use read_file, glob, and grep to understand the existing codebase structure, patterns, '
-    'conventions, config files, and dependencies. Identify what exists and what needs to change.\n\n'
-
-    'PHASE 3 — RESEARCH:\n'
-    'Identify topics you need more context on — frameworks, APIs, libraries, best practices. '
-    'Use web_search and web_fetch to research them. For example:\n'
-    '  - "Next.js 14 app router best practices 2024"\n'
-    '  - "Tailwind CSS v4 setup guide"\n'
-    '  - API docs for libraries you plan to use\n'
-    'Do actual searches — don\'t rely on stale training knowledge for fast-moving tools.\n\n'
-
-    'PHASE 4 — CLARIFY:\n'
-    'If anything is still ambiguous, ask the user using this format:\n\n'
-    'QUESTIONS:\n'
-    '1. Single-select question? [Option A / Option B / Option C]\n'
-    '2. Multi-select question? {Option A / Option B / Option C / Option D}\n'
-    '3. Open-ended question?\n\n'
-    '[brackets] = single-select, {braces} = multi-select checkboxes, no brackets = open text. '
-    'Users can press Tab on any answer to add notes. Only ask if genuinely needed.\n\n'
-
-    'PHASE 5 — PLAN:\n'
-    'Present a detailed plan with:\n'
-    '  - Prerequisites (what needs to be installed/configured first)\n'
-    '  - Step-by-step changes with file paths\n'
-    '  - New files to create vs existing files to modify\n'
-    '  - Dependencies to install\n'
-    '  - Any commands to run\n'
-    '  - How to verify it works\n\n'
-
-    'RULES:\n'
-    '- Do NOT make changes (no write_file, edit_file).\n'
-    '- Do NOT run destructive or modifying commands.\n'
-    '- You MAY use: read_file, glob, grep, web_search, web_fetch, exec (read-only commands only like ls, cat, which, --version).\n'
-    '- End your plan with "PLAN_READY" on its own line.]\n\n'
-)
-
-PLAN_EXECUTE_MSG = (
-    '[The user has approved the plan above. Switch to execute mode and implement it now. '
-    'Proceed step by step, executing all the changes you outlined.]'
-)
+    # Constants moved to acorn/constants.py
 
 
-class MessageInput(TextArea):
-    """TextArea that submits on Enter and inserts newline on Ctrl+Enter."""
-
-    class Submitted:
-        """Fired when user presses Enter to submit."""
-        def __init__(self, text):
-            self.text = text
-
-    def on_key(self, event):
-        # If autocomplete is showing, route up/down/enter/tab/escape to it
-        app = self.app
-        if getattr(app, '_autocomplete_matches', []):
-            if event.key == 'enter' or event.key == 'tab':
-                # Fill selected autocomplete command
-                idx = getattr(app, '_autocomplete_selected', 0)
-                matches = app._autocomplete_matches
-                if idx < len(matches):
-                    cmd, _ = matches[idx]
-                    self.clear()
-                    self.insert(cmd + ' ')
-                app._autocomplete_matches = []
-                app._hide_widget('#autocomplete')
-                event.prevent_default()
-                event.stop()
-                return
-            elif event.key == 'up':
-                app._autocomplete_selected = (app._autocomplete_selected - 1) % min(len(app._autocomplete_matches), 8)
-                app._render_autocomplete()
-                event.prevent_default()
-                event.stop()
-                return
-            elif event.key == 'down':
-                app._autocomplete_selected = (app._autocomplete_selected + 1) % min(len(app._autocomplete_matches), 8)
-                app._render_autocomplete()
-                event.prevent_default()
-                event.stop()
-                return
-            elif event.key == 'escape':
-                app._autocomplete_matches = []
-                app._hide_widget('#autocomplete')
-                event.prevent_default()
-                event.stop()
-                return
-
-        # Enter → send message
-        if event.key == 'enter':
-            text = self.text.strip()
-            if text:
-                if hasattr(app, 'on_message_input_submitted'):
-                    app.on_message_input_submitted(self.Submitted(text))
-                self.clear()
-            event.prevent_default()
-            event.stop()
-            return
-        # Ctrl+J → insert newline
-        if event.key == 'ctrl+j':
-            self.insert('\n')
-            event.prevent_default()
-            event.stop()
-            return
-
-
-class FocusableStatic(Static):
-    """A Static widget that can receive focus for key events.
-    Routes key events to the app's question handler."""
-    can_focus = True
-
-    def on_key(self, event):
-        app = self.app
-        if not getattr(app, '_answering_questions', False):
-            return
-        if getattr(app, '_q_transitioning', False):
-            event.prevent_default()
-            event.stop()
-            return
-        if event.key in ('up', 'down', 'space', 'tab', 'enter', 'escape'):
-            app._handle_question_key(event.key)
-            event.prevent_default()
-            event.stop()
-
-
-class SelectableLog(RichLog):
-    """RichLog that doesn't capture mouse click/drag, allowing terminal-native text selection.
-    Mouse scroll is preserved for scrolling through conversation."""
-
-    def _on_mouse_down(self, event):
-        pass  # Let terminal handle click/drag for text selection
-
-    def _on_mouse_up(self, event):
-        pass
-
-    # Scroll events are inherited from RichLog and still work
+    # Widgets moved to acorn/ui/widgets.py
 
 
 def _to_hex(color_str):
@@ -327,15 +190,6 @@ class AcornApp(App):
     }
     """
 
-    LOGO_FULL = r"""
-     ██████╗  ██████╗ ██████╗ ██████╗ ███╗   ██╗
-    ██╔══██╗██╔════╝██╔═══██╗██╔══██╗████╗  ██║
-    ███████║██║     ██║   ██║██████╔╝██╔██╗ ██║
-    ██╔══██║██║     ██║   ██║██╔══██╗██║╚██╗██║
-    ██║  ██║╚██████╗╚██████╔╝██║  ██║██║ ╚████║
-    ╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═══╝"""
-
-    LOGO_MINI = ' 🌰 acorn'
 
     def __init__(self, conn, session_id, user, theme_name, cwd, is_continue=False, **kwargs):
         super().__init__(**kwargs)
@@ -373,26 +227,7 @@ class AcornApp(App):
         cleanup_old_logs(keep_days=14)
         self._autocomplete_selected = 0
         self._autocomplete_matches = []
-        self._slash_commands = [
-            ('/help', 'Show available commands'),
-            ('/quit', 'Exit Acorn'),
-            ('/clear', 'Clear session history'),
-            ('/stop', 'Stop current generation'),
-            ('/plan', 'Toggle plan mode'),
-            ('/status', 'Connection info'),
-            ('/theme', 'Switch theme (dark, light, oak, forest, oled)'),
-            ('/mode', 'Tool approval mode (auto, ask, locked)'),
-            ('/mode auto', 'Auto-approve non-dangerous tools'),
-            ('/mode ask', 'Prompt for every tool'),
-            ('/mode locked', 'Deny all writes/exec'),
-            ('/mode rules', 'Show session allow rules'),
-            ('/approve-all', 'Shortcut for /mode auto'),
-            ('/test', 'Run UI tests'),
-            ('/test all', 'Run all tests'),
-            ('/bg', 'List background processes'),
-            ('/bg run', 'Run command in background'),
-            ('/bg kill', 'Kill a background process'),
-        ]
+        self._slash_commands = SLASH_COMMANDS
 
     def compose(self) -> ComposeResult:
         yield Static('', id='header-bar')
@@ -549,7 +384,7 @@ class AcornApp(App):
             # Full splash logo
             header_widget.remove_class('collapsed')
             logo = Text()
-            for line in self.LOGO_FULL.strip('\n').split('\n'):
+            for line in LOGO_FULL.strip('\n').split('\n'):
                 logo.append(line + '\n', style=f'bold {t["accent"]}')
             logo.append(f'    {self.user}', style=f'bold {t["prompt_user"]}')
             logo.append(' → ', style=t.get('muted', 'dim'))
@@ -665,24 +500,10 @@ class AcornApp(App):
             pass
 
     def _themed_panel(self, content, title='', border_style=None, **kwargs):
-        """Create a Panel styled with theme colors."""
-        t = self.theme_data
-        if isinstance(content, str):
-            content = Text(content, style=t['fg'])
-        return Panel(
-            content,
-            title=title,
-            title_align='left',
-            border_style=border_style or t['border'],
-            style=f'on {t["bg_panel"]}',
-            padding=(0, 1),
-            **kwargs,
-        )
+        return themed_panel(self.theme_data, content, title, border_style, **kwargs)
 
     def _themed_text(self, text, style=None):
-        """Create a Text with theme foreground as base."""
-        t = self.theme_data
-        return Text(text, style=style or t['fg'])
+        return themed_text(self.theme_data, text, style)
 
     def _scroll_bottom(self):
         try:
