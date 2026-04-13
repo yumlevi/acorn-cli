@@ -17,7 +17,7 @@ from rich.console import Console
 from acorn.config import load_config, merged_config, run_setup_wizard, save_last_session, load_last_session, ensure_local_dir
 from acorn.connection import Connection, AuthError
 from acorn.context import gather_context
-from acorn.permissions import Permissions
+from acorn.permissions import TuiPermissions as Permissions
 from acorn.protocol import chat_message
 from acorn.renderer import Renderer
 from acorn.session import compute_session_id, project_name, get_git_branch

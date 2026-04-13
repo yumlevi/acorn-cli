@@ -100,11 +100,12 @@ class TuiPermissions:
 
     MODES = ('ask', 'auto', 'locked')
 
-    def __init__(self, app):
+    def __init__(self, app=None, renderer=None):
         self.app = app
-        self.mode = 'ask'  # default: ask for approval
-        self.session_rules = set()  # allow rules for this session, e.g. {'exec:git*', 'write_file:src/*'}
-        self.approve_all = False  # legacy compat
+        self.renderer = renderer  # for one-shot mode fallback
+        self.mode = 'auto' if app is None else 'ask'
+        self.session_rules = set()
+        self.approve_all = False
 
     def is_auto_approved(self, tool_name: str, input: dict) -> bool:
         if tool_name in ALWAYS_SAFE:
@@ -122,10 +123,17 @@ class TuiPermissions:
         return False
 
     async def prompt(self, tool_name: str, input: dict) -> bool:
-        """Show approval selector in the TUI. Returns True to allow, False to deny.
-        May also add a session rule if user picks 'Allow similar'."""
+        """Show approval UI. Uses TUI selector if app is available, console prompt otherwise."""
         summary = summarize(tool_name, input)
         rule = make_rule(tool_name, input)
+
+        # One-shot / non-TUI mode — simple console prompt
+        if not self.app:
+            from rich.prompt import Confirm
+            loop = __import__('asyncio').get_event_loop()
+            return await loop.run_in_executor(
+                None, lambda: Confirm.ask(f'  Allow [bold]{tool_name}[/bold]: {summary}?', default=True)
+            )
         dangerous = is_dangerous(tool_name, input)
 
         from rich.text import Text
