@@ -316,7 +316,7 @@ class AcornApp(App):
         yield SelectableLog(id='transcript', wrap=True, highlight=True, markup=True)
         with Vertical(id='bottom-area'):
             yield Static('', id='autocomplete', classes='hidden')
-            yield Input(placeholder='Message acorn...', id='user-input')
+            yield Input(placeholder='Message acorn...', id='user-input', max_length=0)
             yield FocusableStatic('', id='question-selector', classes='hidden')
             yield Input(placeholder='Add context/notes (Tab to go back)...', id='note-input', classes='hidden')
             yield Static('', id='footer-bar')
