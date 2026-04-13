@@ -171,16 +171,12 @@ class FocusableStatic(Static):
                     return
 
         # Fallback: question handler
-        if not getattr(app, '_answering_questions', False):
-            return
-        if getattr(app, '_q_transitioning', False):
-            event.prevent_default()
-            event.stop()
-            return
-        if event.key in ('up', 'down', 'space', 'tab', 'enter', 'escape'):
-            app._handle_question_key(event.key)
-            event.prevent_default()
-            event.stop()
+        if hasattr(app, 'questions_handler') and app.questions_handler.state.active:
+            if not app.questions_handler.state.open_ended and not app.questions_handler.state.noting:
+                if event.key in ('up', 'down', 'space', 'tab', 'enter', 'escape'):
+                    if app.questions_handler.handle_key(event.key):
+                        event.prevent_default()
+                        event.stop()
 
 
 class SelectableLog(RichLog):
