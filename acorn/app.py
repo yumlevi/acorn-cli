@@ -295,10 +295,10 @@ class AcornApp(App):
                 self.conn.send(json.dumps({'type': 'chat:history-request', 'sessionId': self.session_id}))
             )
 
-    def on_click(self, event):
-        """Click on non-input areas refocuses the input field.
-        Don't steal focus from the input itself or prevent text selection."""
-        # Only refocus if the click target isn't the input
+    def on_key(self, event):
+        """Any keypress refocuses the input if it lost focus (e.g. after clicking transcript)."""
+        if event.key in ('up', 'down', 'left', 'right', 'escape', 'tab'):
+            return  # Don't steal these
         try:
             inp = self.query_one('#user-input', Input)
             if not inp.has_focus:
