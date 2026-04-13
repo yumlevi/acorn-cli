@@ -798,18 +798,12 @@ class AcornApp(App):
         if questions and len(questions) >= 1:
             self._log(Text(f'  Agent has {len(questions)} question(s) for you', style=t['accent2']))
             self._scroll_bottom()
-            # Launch interactive question modal
             self.app_questions = questions
-            self.push_screen(
-                QuestionScreen(questions, t),
-                callback=self._on_questions_answered,
-            )
+            # Schedule modal push on next tick to avoid race with WebSocket callback
+            self.call_later(self._push_question_screen, questions, t)
         elif self.plan_mode and response and ('PLAN_READY' in response or len(response) > 500):
             self._last_plan_text = response
-            self.push_screen(
-                PlanApprovalScreen(t, response),
-                callback=self._on_plan_decision,
-            )
+            self.call_later(self._push_plan_screen, t, response)
 
         self._stream_buffer = ''
         self._response_text = []
@@ -820,6 +814,37 @@ class AcornApp(App):
             queued = self._queued_message
             self._queued_message = None
             asyncio.create_task(self._send_message(queued))
+
+    def _push_question_screen(self, questions, t):
+        """Push question modal — deferred to avoid WebSocket callback race."""
+        try:
+            self.push_screen(
+                QuestionScreen(questions, t),
+                callback=self._on_questions_answered,
+            )
+        except Exception as e:
+            # Fallback: show questions inline
+            self._log(Text(f'  (Question modal unavailable: {e})', style=t.get('muted', 'dim')))
+            for q in questions:
+                opts = ''
+                if q['options']:
+                    bracket = '{...}' if q.get('multi') else '[...]'
+                    opts = f' {bracket}'
+                self._log(Text(f'  {q["index"]}. {q["text"]}{opts}', style=t.get('fg', '')))
+            self._log(Text('  Type your answers as a message', style=t.get('muted', 'dim')))
+            self._scroll_bottom()
+
+    def _push_plan_screen(self, t, response):
+        """Push plan approval modal — deferred to avoid WebSocket callback race."""
+        try:
+            self.push_screen(
+                PlanApprovalScreen(t, response),
+                callback=self._on_plan_decision,
+            )
+        except Exception as e:
+            self._log(Text(f'  (Plan modal unavailable: {e})', style=t.get('muted', 'dim')))
+            self._log(Text('  Type "execute" to run, or provide feedback', style=t.get('accent2', t.get('accent', ''))))
+            self._scroll_bottom()
 
     def _on_plan_decision(self, result):
         """Callback from plan approval modal."""
