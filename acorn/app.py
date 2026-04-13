@@ -191,7 +191,8 @@ class AcornApp(App):
         self._tool_lines = []
         self._message_count = 0
         self._header_collapsed = False
-        self._current_activity = ''  # what the agent is doing right now
+        self._current_activity = ''
+        self._queued_message = None  # message waiting to send after generation
 
     def compose(self) -> ComposeResult:
         yield Static('', id='header-bar')
@@ -334,6 +335,8 @@ class AcornApp(App):
         line3.append(f' {self.user}@{proj}', style=t.get('muted', 'dim'))
         if self.generating:
             line3.append('  ● generating...', style=t['thinking'])
+            if self._queued_message:
+                line3.append('  │  1 queued', style=t.get('warning', 'yellow'))
 
         combined = Text()
         combined.append_text(line1)
@@ -416,11 +419,28 @@ class AcornApp(App):
         inp = self.query_one('#user-input', Input)
         inp.value = ''
 
+        # Slash commands always run immediately
         if text.startswith('/'):
             await self._handle_command(text)
             return
 
-        # Show user message in a bordered panel
+        # If generating, queue this message and show it as pending
+        if self.generating:
+            t = self.theme_data
+            self._queued_message = text
+            self._log(self._themed_panel(
+                f'{text}\n[queued — will send when current response finishes]',
+                title=f'[bold]{self.user}[/bold] [dim](queued)[/dim]',
+                border_style=t.get('muted', 'dim'),
+            ))
+            self._scroll_bottom()
+            self._update_footer()
+            return
+
+        await self._send_message(text)
+
+    async def _send_message(self, text):
+        """Send a message to the agent."""
         t = self.theme_data
         self._log(self._themed_panel(text, title=f'[bold]{self.user}[/bold]', border_style=t['prompt_user']))
 
@@ -438,12 +458,13 @@ class AcornApp(App):
         self._tool_lines = []
         self._message_count += 1
         self.generating = True
+        self._queued_message = None
 
-        # Collapse header after first message to save space
         if self._message_count >= 1:
             self._collapse_header()
 
         self._update_footer()
+        self._update_header()
         await self.conn.send(chat_message(self.session_id, content, self.user))
 
     async def _handle_command(self, text):
@@ -715,6 +736,12 @@ class AcornApp(App):
         self._stream_buffer = ''
         self._response_text = []
         self._tool_lines = []
+
+        # Send queued message if one was waiting
+        if self._queued_message and not questions:
+            queued = self._queued_message
+            self._queued_message = None
+            asyncio.create_task(self._send_message(queued))
 
     def _on_questions_answered(self, answers):
         """Callback when user finishes the question modal."""
