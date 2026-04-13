@@ -221,9 +221,7 @@ class AcornApp(App):
         border-top: solid $accent;
     }
     #user-input {
-        min-height: 3;
-        height: auto;
-        max-height: 12;
+        height: 4;
         background: $surface;
         color: $foreground;
         border-top: solid $accent;
