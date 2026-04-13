@@ -106,8 +106,8 @@ class MessageInput(TextArea):
             event.prevent_default()
             event.stop()
             return
-        # Ctrl+Enter → newline
-        if event.key == 'ctrl+enter':
+        # Ctrl+Enter or Shift+Enter → newline
+        if event.key in ('ctrl+enter', 'shift+enter'):
             self.insert('\n')
             event.prevent_default()
             event.stop()
