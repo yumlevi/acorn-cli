@@ -177,7 +177,7 @@ class AcornApp(App):
 
     LOGO_MINI = ' 🌰 acorn'
 
-    def __init__(self, conn, session_id, user, theme_name, cwd, **kwargs):
+    def __init__(self, conn, session_id, user, theme_name, cwd, is_continue=False, **kwargs):
         super().__init__(**kwargs)
         self.conn = conn
         self.session_id = session_id
@@ -186,6 +186,7 @@ class AcornApp(App):
         self.cwd = cwd
         self.plan_mode = False
         self.context_sent = False
+        self._is_continue = is_continue
         self.generating = False
         self._stream_buffer = ''
         self._last_ctrl_c = 0
@@ -230,6 +231,13 @@ class AcornApp(App):
         self.conn.on('chat:start', self._on_start)
 
         self.query_one('#user-input', Input).focus()
+
+        # Request history for --continue sessions
+        if self._is_continue:
+            import json
+            asyncio.create_task(
+                self.conn.send(json.dumps({'type': 'chat:history-request', 'sessionId': self.session_id}))
+            )
 
     def on_click(self, event):
         """Click on non-input areas refocuses the input field.

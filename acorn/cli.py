@@ -361,11 +361,17 @@ async def async_main(host, port, user, key, theme_name='dark', message=None, con
         else:
             # Full-screen TUI mode
             from acorn.app import AcornApp
-            app = AcornApp(conn, session_id, user, theme_name, cwd)
+            app = AcornApp(conn, session_id, user, theme_name, cwd, is_continue=continue_session)
             app.plan_mode = plan_mode
-            await app.run_async()
+            try:
+                await app.run_async()
+            except (LookupError, Exception):
+                pass  # Textual shutdown timer cleanup race condition
     finally:
-        await conn.close()
+        try:
+            await conn.close()
+        except Exception:
+            pass
 
     return 0
 
