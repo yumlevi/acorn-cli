@@ -85,6 +85,19 @@ PLAN_EXECUTE_MSG = (
 )
 
 
+class SelectableLog(RichLog):
+    """RichLog that doesn't capture mouse click/drag, allowing terminal-native text selection.
+    Mouse scroll is preserved for scrolling through conversation."""
+
+    def _on_mouse_down(self, event):
+        pass  # Let terminal handle click/drag for text selection
+
+    def _on_mouse_up(self, event):
+        pass
+
+    # Scroll events are inherited from RichLog and still work
+
+
 def _to_hex(color_str):
     """Extract a hex color from a Rich style string. Falls back to a default."""
     import re
@@ -233,7 +246,7 @@ class AcornApp(App):
 
     def compose(self) -> ComposeResult:
         yield Static('', id='header-bar')
-        yield RichLog(id='transcript', wrap=True, highlight=True, markup=True)
+        yield SelectableLog(id='transcript', wrap=True, highlight=True, markup=True)
         yield Static('', id='stream-area')
         with Vertical(id='bottom-area'):
             yield Input(placeholder='Message acorn...', id='user-input')
@@ -417,7 +430,7 @@ class AcornApp(App):
 
     def _log(self, renderable):
         try:
-            self.query_one('#transcript', RichLog).write(renderable)
+            self.query_one('#transcript', SelectableLog).write(renderable)
         except NoMatches:
             pass
 
@@ -443,7 +456,7 @@ class AcornApp(App):
 
     def _scroll_bottom(self):
         try:
-            self.query_one('#transcript', RichLog).scroll_end(animate=False)
+            self.query_one('#transcript', SelectableLog).scroll_end(animate=False)
         except NoMatches:
             pass
 
@@ -573,7 +586,7 @@ class AcornApp(App):
             await self.conn.send(clear_message(self.session_id))
             self.context_sent = False
             try:
-                self.query_one('#transcript', RichLog).clear()
+                self.query_one('#transcript', SelectableLog).clear()
             except NoMatches:
                 pass
             self._log(Text('  Session cleared', style='dim'))
@@ -698,7 +711,7 @@ class AcornApp(App):
                 style=f'on {t["bg_panel"]}',
                 padding=(0, 1),
             ))
-            self.query_one('#transcript', RichLog).scroll_end(animate=False)
+            self.query_one('#transcript', SelectableLog).scroll_end(animate=False)
         except NoMatches:
             pass
 
