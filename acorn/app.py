@@ -133,16 +133,20 @@ class AcornApp(App):
         margin: 0 1;
         background: $background;
     }
-    #user-input {
+    #bottom-area {
         dock: bottom;
+        height: auto;
+        max-height: 8;
+        background: $surface;
+        border-top: solid $accent;
+    }
+    #user-input {
         height: 3;
         padding: 0 1;
         background: $surface;
         color: $foreground;
-        border-top: solid $accent;
     }
     #footer-bar {
-        dock: bottom;
         height: 3;
         width: 100%;
         background: $surface;
@@ -187,6 +191,7 @@ class AcornApp(App):
         self._tool_lines = []
         self._message_count = 0
         self._header_collapsed = False
+        self._current_activity = ''  # what the agent is doing right now
 
     def compose(self) -> ComposeResult:
         yield Static('', id='header-bar')
@@ -195,8 +200,9 @@ class AcornApp(App):
             Static('', id='stream-area'),
             id='main-scroll',
         )
-        yield Static('', id='footer-bar')
-        yield Input(placeholder='Message acorn...', id='user-input')
+        with Vertical(id='bottom-area'):
+            yield Input(placeholder='Message acorn...', id='user-input')
+            yield Static('', id='footer-bar')
 
     def on_mount(self):
         _register_acorn_themes(self)
@@ -254,7 +260,7 @@ class AcornApp(App):
             return
 
         if self._header_collapsed:
-            # Mini status bar — single line with key info
+            # Mini status bar — single line with context
             header_widget.remove_class('collapsed')
             header_widget.add_class('collapsed')
             mini = Text()
@@ -265,10 +271,14 @@ class AcornApp(App):
             if branch:
                 mini.append(f' ({branch})', style=t['prompt_branch'])
             mini.append('  │  ', style=t.get('muted', 'dim'))
-            mini.append(f'{self._message_count} msgs', style=t.get('muted', 'dim'))
-            if self.generating:
-                mini.append('  │  ', style=t.get('muted', 'dim'))
-                mini.append('● generating', style=t['thinking'])
+            if self.generating and self._current_activity:
+                mini.append(f'● {self._current_activity}', style=t['thinking'])
+            elif self.generating:
+                mini.append('● thinking...', style=t['thinking'])
+            else:
+                mini.append(f'{self._message_count} msgs', style=t.get('muted', 'dim'))
+                mode = 'plan' if self.plan_mode else 'exec'
+                mini.append(f'  │  {mode}', style=t.get('muted', 'dim'))
             header_widget.update(mini)
         else:
             # Full splash logo
@@ -577,17 +587,25 @@ class AcornApp(App):
         t = self.theme_data
         status = msg.get('status', '')
         if status == 'thinking_start':
+            self._current_activity = 'thinking...'
+            self._update_header()
             self._tool_lines.append(('thinking', '● Thinking...'))
             self._update_tool_display()
         elif status == 'thinking_done':
+            self._current_activity = ''
+            self._update_header()
             self._tool_lines = [(k, v) for k, v in self._tool_lines if k != 'thinking']
             self._update_tool_display()
         elif status == 'tool_exec_start':
             tool = msg.get('tool', '')
             detail = msg.get('detail', '')[:80]
+            self._current_activity = f'{tool} {detail[:40]}'
+            self._update_header()
             self._tool_lines.append(('tool_start', f'⚙ {tool} {detail}'))
             self._update_tool_display()
         elif status == 'tool_exec_done':
+            self._current_activity = ''
+            self._update_header()
             parts = []
             if msg.get('durationMs'):
                 parts.append(f'{msg["durationMs"]}ms')
