@@ -592,39 +592,40 @@ THEMES = {
     },
     'snes': {
         'name': 'snes',
-        'icon': '🎲',
-        # SNES/90s — purple-grey with colorful accents
-        'bg': '#2c2040',
-        'bg_header': '#3a2d50',
-        'bg_input': '#3a2d50',
-        'bg_panel': '#3a2d50',
-        'fg': '#d0c8e0',
-        'border': '#584a70',
-        'accent': '#e0a0e0',
-        'accent2': '#80c0f0',
-        'success': '#80e0a0',
-        'error': 'bold #f06060',
-        'warning': '#f0d060',
+        'icon': '🎮',
+        # Super Famicom controller — light grey body, colorful ABXY buttons
+        # A=red, B=yellow, X=blue, Y=green + purple/lavender d-pad/shoulder
+        'bg': '#d4d0cc',          # controller body grey
+        'bg_header': '#c4c0bb',   # slightly darker grey
+        'bg_input': '#c4c0bb',
+        'bg_panel': '#c8c4bf',
+        'fg': '#2a2a30',          # dark text on light body
+        'border': '#a8a4a0',      # grey border
+        'accent': '#6b5ea8',      # purple/lavender (d-pad, shoulder buttons)
+        'accent2': '#4466cc',     # X button blue
+        'success': '#40a840',     # Y button green
+        'error': 'bold #cc3030',  # A button red
+        'warning': '#ccaa20',     # B button yellow
         'info': 'dim',
-        'muted': '#584a70',
-        'tool_icon': '#f0d060',
-        'tool_done': '#80e0a0',
-        'read_icon': '#80c0f0',
-        'edit_icon': '#f0d060',
-        'diff_add': '#80e0a0',
-        'diff_del': '#f06060',
-        'thinking': 'italic #e0a0e0',
-        'usage': '#584a70',
-        'prompt_user': '#e0a0e0',
-        'prompt_project': '#80e0a0',
-        'prompt_branch': '#f0d060',
-        'prompt_symbol': 'bold #e0a0e0',
-        'plan_bar_bg': '#d0c8e0 on #3a2d50',
-        'exec_bar_bg': '#d0c8e0 on #2d503a',
-        'plan_label': 'bold #2c2040 on #e0a0e0',
-        'exec_label': 'bold #2c2040 on #80e0a0',
-        'banner': 'bold #e0a0e0',
-        'banner_sub': '#584a70',
+        'muted': '#807c78',       # worn grey
+        'tool_icon': '#ccaa20',   # B yellow
+        'tool_done': '#40a840',   # Y green
+        'read_icon': '#4466cc',   # X blue
+        'edit_icon': '#ccaa20',   # B yellow
+        'diff_add': '#40a840',    # Y green
+        'diff_del': '#cc3030',    # A red
+        'thinking': 'italic #6b5ea8',  # purple
+        'usage': '#807c78',
+        'prompt_user': '#6b5ea8',      # purple
+        'prompt_project': '#40a840',   # green
+        'prompt_branch': '#ccaa20',    # yellow
+        'prompt_symbol': 'bold #6b5ea8',
+        'plan_bar_bg': '#2a2a30 on #b0acc8',   # dark on lavender
+        'exec_bar_bg': '#2a2a30 on #a8c8a8',   # dark on green-grey
+        'plan_label': 'bold #d4d0cc on #6b5ea8', # light on purple
+        'exec_label': 'bold #d4d0cc on #40a840', # light on green
+        'banner': 'bold #6b5ea8',
+        'banner_sub': '#807c78',
         'code_theme': 'monokai',
         'separator': '#584a70',
     },
