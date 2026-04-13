@@ -1143,7 +1143,8 @@ class AcornApp(App):
         self._update_header()
         response = ''.join(self._response_text)
         usage = msg.get('usage', {})
-        self.slog.info('ws:done', f'{len(response)} chars response',
+        server_text = msg.get('text', '')
+        self.slog.info('ws:done', f'{len(response)} chars accumulated, {len(server_text)} chars server',
                       iters=msg.get('iterations'), tools=msg.get('toolUsage'),
                       input_tokens=usage.get('input_tokens'), output_tokens=usage.get('output_tokens'))
         if response.strip():
@@ -1173,6 +1174,8 @@ class AcornApp(App):
 
         # Detect structured questions from the agent
         questions = parse_questions(response) if response else []
+        self.slog.info('question-detect', f'response={len(response)} chars, questions={len(questions)}',
+                       has_marker='QUESTIONS' in response.upper() if response else False)
         if questions and len(questions) >= 1:
             self._log(Text(f'  Agent has {len(questions)} question(s) for you', style=t['accent2']))
             self._scroll_bottom()
