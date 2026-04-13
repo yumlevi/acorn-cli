@@ -595,37 +595,37 @@ THEMES = {
         'icon': '🎮',
         # Super Famicom controller — light grey body, colorful ABXY buttons
         # A=red, B=yellow, X=blue, Y=green + purple/lavender d-pad/shoulder
-        'bg': '#d4d0cc',          # controller body grey
-        'bg_header': '#c4c0bb',   # slightly darker grey
-        'bg_input': '#c4c0bb',
-        'bg_panel': '#c8c4bf',
-        'fg': '#2a2a30',          # dark text on light body
-        'border': '#a8a4a0',      # grey border
-        'accent': '#6b5ea8',      # purple/lavender (d-pad, shoulder buttons)
-        'accent2': '#4466cc',     # X button blue
-        'success': '#40a840',     # Y button green
-        'error': 'bold #cc3030',  # A button red
-        'warning': '#ccaa20',     # B button yellow
+        'bg': '#8a8680',          # darker controller grey
+        'bg_header': '#7a7670',   # header darker
+        'bg_input': '#7a7670',
+        'bg_panel': '#807c76',
+        'fg': '#f0ece8',          # light text on dark grey
+        'border': '#6a6660',      # darker border
+        'accent': '#b0a0e0',      # brighter purple/lavender
+        'accent2': '#6090e0',     # X button blue
+        'success': '#60d060',     # Y button green
+        'error': 'bold #f04040',  # A button red
+        'warning': '#e0c040',     # B button yellow
         'info': 'dim',
-        'muted': '#807c78',       # worn grey
-        'tool_icon': '#ccaa20',   # B yellow
-        'tool_done': '#40a840',   # Y green
-        'read_icon': '#4466cc',   # X blue
-        'edit_icon': '#ccaa20',   # B yellow
-        'diff_add': '#40a840',    # Y green
-        'diff_del': '#cc3030',    # A red
-        'thinking': 'italic #6b5ea8',  # purple
-        'usage': '#807c78',
-        'prompt_user': '#6b5ea8',      # purple
-        'prompt_project': '#40a840',   # green
-        'prompt_branch': '#ccaa20',    # yellow
-        'prompt_symbol': 'bold #6b5ea8',
-        'plan_bar_bg': '#2a2a30 on #b0acc8',   # dark on lavender
-        'exec_bar_bg': '#2a2a30 on #a8c8a8',   # dark on green-grey
-        'plan_label': 'bold #d4d0cc on #6b5ea8', # light on purple
-        'exec_label': 'bold #d4d0cc on #40a840', # light on green
-        'banner': 'bold #6b5ea8',
-        'banner_sub': '#807c78',
+        'muted': '#a09c98',       # lighter muted on dark grey
+        'tool_icon': '#e0c040',   # B yellow
+        'tool_done': '#60d060',   # Y green
+        'read_icon': '#6090e0',   # X blue
+        'edit_icon': '#e0c040',   # B yellow
+        'diff_add': '#60d060',    # Y green
+        'diff_del': '#f04040',    # A red
+        'thinking': 'italic #b0a0e0',  # purple
+        'usage': '#a09c98',
+        'prompt_user': '#b0a0e0',      # purple
+        'prompt_project': '#60d060',   # green
+        'prompt_branch': '#e0c040',    # yellow
+        'prompt_symbol': 'bold #b0a0e0',
+        'plan_bar_bg': '#f0ece8 on #6a6070',   # light on dark purple
+        'exec_bar_bg': '#f0ece8 on #507050',   # light on dark green
+        'plan_label': 'bold #f0ece8 on #8070b0', # light on purple
+        'exec_label': 'bold #f0ece8 on #409040', # light on green
+        'banner': 'bold #b0a0e0',
+        'banner_sub': '#a09c98',
         'code_theme': 'monokai',
         'separator': '#584a70',
     },
