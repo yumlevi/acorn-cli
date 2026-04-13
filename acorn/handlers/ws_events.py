@@ -18,7 +18,18 @@ class WSEventsMixin:
 
     async def _on_history(self, msg):
         messages = msg.get('messages', [])
+        # Stale session detection — server has no history but we have local data
         if not messages:
+            writer = getattr(self, 'session_writer', None)
+            if writer and writer.message_count > 0:
+                t = self.theme_data
+                self._log(Text('  ⚠ Server session expired — local history preserved', style=t.get('warning', 'yellow')))
+                self._scroll_bottom()
+                # Load from local JSONL
+                from acorn.session_writer import load_session
+                local = load_session(self.session_id)
+                if local and hasattr(self, '_render_local_history'):
+                    self._render_local_history(local)
             return
         t = self.theme_data
         self._log(Rule('Session History', style=t['separator']))

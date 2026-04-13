@@ -302,12 +302,46 @@ class AcornApp(WSEventsMixin, QuestionsMixin, PlanMixin, App):
             self._log(Text('  ' + '  │  '.join(s.strip() for s in summary_parts), style=t['muted']))
             self._scroll_bottom()
 
-        # Request history for --continue sessions
+        # Resume previous session — try local JSONL first, then server
         if self._is_continue:
-            import json
-            asyncio.create_task(
-                self.conn.send(json.dumps({'type': 'chat:history-request', 'sessionId': self.session_id}))
-            )
+            from acorn.session_writer import load_session
+            local_history = load_session(self.session_id)
+            if local_history:
+                self._render_local_history(local_history)
+            else:
+                import json
+                asyncio.create_task(
+                    self.conn.send(json.dumps({'type': 'chat:history-request', 'sessionId': self.session_id}))
+                )
+
+    def _render_local_history(self, messages):
+        """Render chat history from local JSONL file."""
+        t = self.theme_data
+        user_count = sum(1 for m in messages if m.get('role') == 'user')
+        assistant_count = sum(1 for m in messages if m.get('role') == 'assistant')
+        self._log(Rule(f'Local history ({user_count} sent, {assistant_count} received)', style=t['separator']))
+        for m in messages:
+            role = m.get('role', '')
+            text = m.get('text', '')
+            if not text or not text.strip():
+                continue
+            if role == 'user':
+                display = text[:300] + '...' if len(text) > 300 else text
+                self._log(self._themed_panel(display, title=f'[bold]{self.user}[/bold]', border_style=t['prompt_user']))
+            elif role == 'assistant':
+                try:
+                    content = Markdown(text)
+                except Exception:
+                    content = Text(text, style=t['fg'])
+                self._log(Panel(content, title='[bold]acorn[/bold]', title_align='left',
+                                border_style=t['accent'], style=f'on {t["bg_panel"]}', padding=(0, 1)))
+            elif role == 'error':
+                self._log(Text(f'  ✗ {text}', style=t['error']))
+            # Skip tool entries — too verbose for history
+        self._log(Rule(style=t['separator']))
+        self._log(Text(f'  Context will be re-sent on next message', style=t['muted']))
+        self.ctx_manager.reset()  # Force full context on next message
+        self._scroll_bottom()
 
     def on_message_input_submitted(self, event):
         """Handle Enter from the MessageInput widget."""
@@ -319,7 +353,7 @@ class AcornApp(WSEventsMixin, QuestionsMixin, PlanMixin, App):
     def on_key(self, event):
         """Route keys: question selector, autocomplete."""
         # Question selector mode — intercept arrow keys, space, tab, enter, escape
-        if getattr(self, '_answering_questions', False) and not getattr(self, '_q_open_ended', False) and not getattr(self, '_q_noting', False):
+        if self.sm.state == self._AppState.QUESTIONS and not getattr(self, '_q_open_ended', False) and not getattr(self, '_q_noting', False):
             q = self._pending_questions[self._current_question_idx] if self._current_question_idx < len(self._pending_questions) else None
             if q and q.get('options'):
                 if event.key in ('up', 'down', 'space', 'tab', 'enter', 'escape'):
@@ -654,13 +688,13 @@ class AcornApp(WSEventsMixin, QuestionsMixin, PlanMixin, App):
             await self._handle_command(text)
             return
 
-        if getattr(self, '_answering_questions', False) and getattr(self, '_q_open_ended', False):
+        if self.sm.state == self._AppState.QUESTIONS and getattr(self, '_q_open_ended', False):
             self._q_open_ended = False
             self._handle_question_answer(text)
             return
 
-        if getattr(self, '_awaiting_plan_decision', False):
-            if getattr(self, '_awaiting_plan_feedback', False):
+        if self.sm.state in (self._AppState.PLAN_REVIEW, self._AppState.PLAN_FEEDBACK):
+            if self.sm.state == self._AppState.PLAN_FEEDBACK:
                 self._awaiting_plan_feedback = False
                 self._awaiting_plan_decision = False
                 self._handle_plan_decision(text)
@@ -696,11 +730,11 @@ class AcornApp(WSEventsMixin, QuestionsMixin, PlanMixin, App):
             return
 
         # If awaiting plan decision (1/2/3 or feedback text)
-        if getattr(self, '_awaiting_plan_decision', False):
-            # If we asked for feedback text after picking "2"
-            if getattr(self, '_awaiting_plan_feedback', False):
+        if self.sm.state in (self._AppState.PLAN_REVIEW, self._AppState.PLAN_FEEDBACK):
+            if self.sm.state == self._AppState.PLAN_FEEDBACK:
                 self._awaiting_plan_feedback = False
                 self._awaiting_plan_decision = False
+                self.sm.force(self._AppState.IDLE)
                 # Re-enter with the actual feedback
                 self._handle_plan_decision(text)
             else:
