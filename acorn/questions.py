@@ -24,8 +24,15 @@ def parse_questions(text: str) -> list:
 
     q_text = blocks[-1]
 
-    # Stop at the first non-question content (blank line after questions block, or a new heading)
-    q_text = re.split(r'\n\s*\n', q_text)[0]
+    # Split on blank lines, take the first non-empty segment that has numbered items
+    segments = re.split(r'\n\s*\n', q_text)
+    q_text = ''
+    for seg in segments:
+        if re.search(r'^\s*\d+\.', seg, re.MULTILINE):
+            q_text = seg
+            break
+    if not q_text:
+        return []
 
     questions = []
     pattern = r'^\s*(\d+)\.\s+(.+?)$'
