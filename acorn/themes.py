@@ -595,12 +595,12 @@ THEMES = {
         'icon': '🎮',
         # Super Famicom controller — light grey body, colorful ABXY buttons
         # A=red, B=yellow, X=blue, Y=green + purple/lavender d-pad/shoulder
-        'bg': '#8a8680',          # darker controller grey
-        'bg_header': '#7a7670',   # header darker
-        'bg_input': '#7a7670',
-        'bg_panel': '#807c76',
-        'fg': '#f0ece8',          # light text on dark grey
-        'border': '#6a6660',      # darker border
+        'bg': '#2a2830',          # dark charcoal with slight purple
+        'bg_header': '#343240',   # darker header
+        'bg_input': '#343240',
+        'bg_panel': '#302e3a',
+        'fg': '#d8d4d0',          # warm light grey text
+        'border': '#4a4850',      # subtle border
         'accent': '#b0a0e0',      # brighter purple/lavender
         'accent2': '#6090e0',     # X button blue
         'success': '#60d060',     # Y button green
