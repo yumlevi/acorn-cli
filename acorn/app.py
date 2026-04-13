@@ -95,19 +95,18 @@ class MessageInput(TextArea):
             self.text = text
 
     def on_key(self, event):
+        # Enter → send message
         if event.key == 'enter':
             text = self.text.strip()
             if text:
-                self.post_message_no_wait = None  # not needed
-                # Post to app via callback
                 if hasattr(self.app, 'on_message_input_submitted'):
                     self.app.on_message_input_submitted(self.Submitted(text))
                 self.clear()
             event.prevent_default()
             event.stop()
             return
-        # Ctrl+Enter or Shift+Enter → newline
-        if event.key in ('ctrl+enter', 'shift+enter'):
+        # Ctrl+J → insert newline (since Shift+Enter isn't available in terminals)
+        if event.key == 'ctrl+j':
             self.insert('\n')
             event.prevent_default()
             event.stop()
@@ -588,14 +587,14 @@ class AcornApp(App):
 
         # Line 2: key hints
         line2 = Text()
+        line2.append(' Enter', style=f'bold {t["accent"]}')
+        line2.append(' send ', style=t.get('muted', 'dim'))
+        line2.append(' Ctrl+J', style=f'bold {t["accent"]}')
+        line2.append(' newline ', style=t.get('muted', 'dim'))
         line2.append(' Ctrl+P', style=f'bold {t["accent"]}')
         line2.append(' mode ', style=t.get('muted', 'dim'))
-        line2.append(' Esc', style=f'bold {t["accent"]}')
-        line2.append(' stop ', style=t.get('muted', 'dim'))
-        line2.append(' /help', style=f'bold {t["accent"]}')
-        line2.append(' cmds ', style=t.get('muted', 'dim'))
-        line2.append(' Ctrl+C×2', style=f'bold {t["accent"]}')
-        line2.append(' quit', style=t.get('muted', 'dim'))
+        line2.append(' Ctrl+C', style=f'bold {t["accent"]}')
+        line2.append(' stop/quit', style=t.get('muted', 'dim'))
 
         # Line 3: session info + animated status
         SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
