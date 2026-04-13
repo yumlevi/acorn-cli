@@ -1,9 +1,9 @@
 """Tool dispatch — routes tool:request to local handlers or signals server fallback."""
 
-from acorn.tools import file_ops, shell, search
+from acorn.tools import file_ops, shell, search, serve
 
 # Tools executed locally on the user's machine
-LOCAL_TOOLS = {'exec', 'read_file', 'write_file', 'edit_file', 'glob', 'grep', 'web_fetch'}
+LOCAL_TOOLS = {'exec', 'read_file', 'write_file', 'edit_file', 'glob', 'grep', 'web_fetch', 'web_serve'}
 
 # Tools that must stay server-side (operate on Anima internals)
 SERVER_TOOLS = {
@@ -12,7 +12,7 @@ SERVER_TOOLS = {
     'delegate_task', 'task_status', 'task_cancel', 'task_update',
     'save_tool', 'skill_lookup', 'skill_update',
     'session_status', 'sessions_list', 'env_manage',
-    'web_serve', 'notify_user', 'web_search',
+    'notify_user', 'web_search',
     'anima_list', 'anima_message', 'anima_graph', 'anima_manage',
     'browser', 'startup_tasks', 'data_poller',
     'remote_exec', 'remote_read_file', 'remote_write_file', 'ssh_tunnel',
@@ -49,7 +49,25 @@ class ToolExecutor:
             return search.glob_search(input, self.cwd)
         elif name == 'grep':
             return search.grep_search(input, self.cwd)
+        elif name == 'web_serve':
+            return self._handle_web_serve(input)
         elif name == 'web_fetch':
-            return None  # delegate to server for now
+            return None  # delegate to server
         else:
             return None
+
+    def _handle_web_serve(self, input: dict) -> dict:
+        """Handle web_serve locally — spin up an HTTP server on the user's machine."""
+        action = input.get('action', 'start')
+        if action == 'start':
+            directory = input.get('dir', input.get('directory', self.cwd))
+            port = input.get('port', 0)
+            return serve.start_server(directory, port)
+        elif action == 'stop':
+            port = input.get('port', 0)
+            return serve.stop_server(port)
+        elif action == 'status':
+            servers = serve.list_servers()
+            return {'servers': servers, 'count': len(servers)}
+        else:
+            return serve.start_server(self.cwd)
