@@ -24,7 +24,28 @@ class MessageInput(TextArea):
 
         # If autocomplete is showing, route keys to it
         if getattr(app, '_autocomplete_matches', []):
-            if event.key == 'enter' or event.key == 'tab':
+            if event.key == 'enter':
+                # Enter: if typed text exactly matches a command, dismiss and submit normally.
+                # This prevents /update from autocompleting to /update check on Enter.
+                typed = self.text.strip().lower()
+                exact = any(cmd == typed for cmd, _ in app._autocomplete_matches)
+                if exact:
+                    app._autocomplete_matches = []
+                    app._hide_widget('#autocomplete')
+                    # Don't prevent default — let Enter submit the input
+                else:
+                    idx = getattr(app, '_autocomplete_selected', 0)
+                    matches = app._autocomplete_matches
+                    if idx < len(matches):
+                        cmd, _ = matches[idx]
+                        self.clear()
+                        self.insert(cmd + ' ')
+                    app._autocomplete_matches = []
+                    app._hide_widget('#autocomplete')
+                    event.prevent_default()
+                    event.stop()
+                return
+            elif event.key == 'tab':
                 idx = getattr(app, '_autocomplete_selected', 0)
                 matches = app._autocomplete_matches
                 if idx < len(matches):
