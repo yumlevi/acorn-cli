@@ -133,20 +133,20 @@ class AcornApp(App):
         margin: 0 1;
         background: $background;
     }
-    #footer-bar {
-        dock: bottom;
-        height: 3;
-        width: 100%;
-        background: $surface;
-        border-top: solid $accent;
-        padding: 0 1;
-    }
     #user-input {
         dock: bottom;
         height: 3;
         padding: 0 1;
         background: $surface;
         color: $foreground;
+        border-top: solid $accent;
+    }
+    #footer-bar {
+        dock: bottom;
+        height: 3;
+        width: 100%;
+        background: $surface;
+        padding: 0 1;
     }
     Input {
         background: $surface;
@@ -195,8 +195,8 @@ class AcornApp(App):
             Static('', id='stream-area'),
             id='main-scroll',
         )
-        yield Input(placeholder='Message acorn...', id='user-input')
         yield Static('', id='footer-bar')
+        yield Input(placeholder='Message acorn...', id='user-input')
 
     def on_mount(self):
         _register_acorn_themes(self)
@@ -254,17 +254,21 @@ class AcornApp(App):
             return
 
         if self._header_collapsed:
-            # Mini header — single line
-            header_widget.remove_class('collapsed')  # reset first
+            # Mini status bar — single line with key info
+            header_widget.remove_class('collapsed')
             header_widget.add_class('collapsed')
             mini = Text()
-            mini.append(self.LOGO_MINI, style=f'bold {t["accent"]}')
-            mini.append(f'  {self.user}', style=t['prompt_user'])
-            mini.append(f'  {proj}', style=t['prompt_project'])
+            mini.append(' 🌰 ', style=f'bold {t["accent"]}')
+            mini.append(self.user, style=f'bold {t["prompt_user"]}')
+            mini.append(' ⟩ ', style=t.get('muted', 'dim'))
+            mini.append(proj, style=t['prompt_project'])
             if branch:
-                mini.append(f'  {branch}', style=t['prompt_branch'])
+                mini.append(f' ({branch})', style=t['prompt_branch'])
+            mini.append('  │  ', style=t.get('muted', 'dim'))
+            mini.append(f'{self._message_count} msgs', style=t.get('muted', 'dim'))
             if self.generating:
-                mini.append('  ●', style=t['thinking'])
+                mini.append('  │  ', style=t.get('muted', 'dim'))
+                mini.append('● generating', style=t['thinking'])
             header_widget.update(mini)
         else:
             # Full splash logo
