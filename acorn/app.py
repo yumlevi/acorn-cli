@@ -943,12 +943,14 @@ class AcornApp(App):
             except NoMatches:
                 pass
         else:
-            # Open-ended: use the regular input
+            # Open-ended: show regular input, hide selector
             self._answering_questions = True
             self._q_open_ended = True
+            self._hide_widget('#question-selector')
+            self._show_widget('#user-input')
             try:
                 inp = self.query_one('#user-input', Input)
-                inp.placeholder = f'Answer question {idx + 1}/{total}... (Tab to add notes)'
+                inp.placeholder = f'Answer question {idx + 1}/{total}...'
                 inp.value = ''
                 inp.focus()
             except NoMatches:
