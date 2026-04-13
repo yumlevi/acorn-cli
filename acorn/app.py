@@ -92,11 +92,16 @@ class FocusableStatic(Static):
 
     def on_key(self, event):
         app = self.app
-        if hasattr(app, '_handle_question_key') and getattr(app, '_answering_questions', False):
-            if event.key in ('up', 'down', 'space', 'tab', 'enter', 'escape'):
-                app._handle_question_key(event.key)
-                event.prevent_default()
-                event.stop()
+        if not getattr(app, '_answering_questions', False):
+            return
+        if getattr(app, '_q_transitioning', False):
+            event.prevent_default()
+            event.stop()
+            return
+        if event.key in ('up', 'down', 'space', 'tab', 'enter', 'escape'):
+            app._handle_question_key(event.key)
+            event.prevent_default()
+            event.stop()
 
 
 class SelectableLog(RichLog):
@@ -925,6 +930,7 @@ class AcornApp(App):
         self._q_checked = set()
         self._q_noting = False
         self._q_open_ended = False
+        self._q_transitioning = False
 
         if q['options']:
             # Show selector in bottom area, hide regular input
@@ -1076,8 +1082,12 @@ class AcornApp(App):
         self._scroll_bottom()
 
         self._current_question_idx += 1
-        # Defer to next tick so Textual re-renders between questions
-        self.call_later(self._show_current_question)
+        # Block key events during transition, defer next question
+        self._q_transitioning = True
+        def _next():
+            self._q_transitioning = False
+            self._show_current_question()
+        self.set_timer(0.1, _next)
 
     def _handle_question_answer(self, text):
         """Handle text input for open-ended questions or note input."""
@@ -1103,7 +1113,11 @@ class AcornApp(App):
         self._log(Text(f'  → {text}', style=t['success']))
         self._scroll_bottom()
         self._current_question_idx += 1
-        self.call_later(self._show_current_question)
+        self._q_transitioning = True
+        def _next():
+            self._q_transitioning = False
+            self._show_current_question()
+        self.set_timer(0.1, _next)
 
     def _send_question_answers(self):
         """Format and send all answers back to the agent."""
