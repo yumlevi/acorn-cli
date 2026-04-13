@@ -89,25 +89,29 @@ PLAN_EXECUTE_MSG = (
 class MessageInput(TextArea):
     """TextArea that submits on Enter and inserts newline on Ctrl+Enter."""
 
-    BINDINGS = [
-        Binding('enter', 'submit', 'Send', show=False),
-        Binding('ctrl+enter', 'newline', 'New line', show=False),
-    ]
-
-    class Submitted(TextArea.Changed):
+    class Submitted:
         """Fired when user presses Enter to submit."""
-        def __init__(self, text_area, text):
-            super().__init__(text_area)
+        def __init__(self, text):
             self.text = text
 
-    def action_submit(self):
-        text = self.text.strip()
-        if text:
-            self.post_message(self.Submitted(self, text))
-            self.clear()
-
-    def action_newline(self):
-        self.insert('\n')
+    def on_key(self, event):
+        if event.key == 'enter':
+            text = self.text.strip()
+            if text:
+                self.post_message_no_wait = None  # not needed
+                # Post to app via callback
+                if hasattr(self.app, 'on_message_input_submitted'):
+                    self.app.on_message_input_submitted(self.Submitted(text))
+                self.clear()
+            event.prevent_default()
+            event.stop()
+            return
+        # Ctrl+Enter → newline
+        if event.key == 'ctrl+enter':
+            self.insert('\n')
+            event.prevent_default()
+            event.stop()
+            return
 
 
 class FocusableStatic(Static):
@@ -420,7 +424,7 @@ class AcornApp(App):
                 self.conn.send(json.dumps({'type': 'chat:history-request', 'sessionId': self.session_id}))
             )
 
-    def on_message_input_submitted(self, event: MessageInput.Submitted):
+    def on_message_input_submitted(self, event):
         """Handle Enter from the MessageInput widget."""
         self._autocomplete_matches = []
         self._hide_widget('#autocomplete')
