@@ -106,7 +106,7 @@ class TuiPermissions:
     - locked: approve nothing that isn't in ALWAYS_SAFE
     """
 
-    MODES = ('ask', 'auto', 'locked')
+    MODES = ('ask', 'auto', 'locked', 'yolo')
 
     def __init__(self, app=None, renderer=None):
         self.app = app
@@ -118,6 +118,8 @@ class TuiPermissions:
     def is_auto_approved(self, tool_name: str, input: dict) -> bool:
         if tool_name in ALWAYS_SAFE:
             return True
+        if self.mode == 'yolo':
+            return True  # everything approved, no exceptions
         if self.approve_all or self.mode == 'auto':
             if is_dangerous(tool_name, input):
                 return False  # dangerous always asks

@@ -310,6 +310,9 @@ class AcornApp(App):
             self._log(Text('  ' + '  │  '.join(s.strip() for s in summary_parts), style=t['muted']))
             self._scroll_bottom()
 
+        # Check for updates in background
+        asyncio.create_task(self._check_updates())
+
         # Resume previous session — try local JSONL first, then server
         if self._is_continue:
             from acorn.session_writer import load_session
@@ -564,6 +567,100 @@ class AcornApp(App):
             return self.chat_handler.state.message_count
         return 0
 
+    async def _check_updates(self):
+        """Check for updates in background thread, notify if available."""
+        import concurrent.futures
+        from acorn.updater import check_for_updates
+        loop = asyncio.get_event_loop()
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                result = await loop.run_in_executor(pool, check_for_updates)
+            if result and result['available']:
+                t = self.theme_data
+                n = result['behind']
+                self._log(Text(
+                    f'  ⬆ Update available — {n} new commit{"s" if n != 1 else ""} '
+                    f'({result["local"]} → {result["remote"]}). Type /update to install.',
+                    style=f'bold {t.get("warning", "yellow")}',
+                ))
+                self._scroll_bottom()
+                self._pending_update = result
+        except Exception:
+            pass  # silent — update check is best-effort
+
+    async def _do_update(self, args=''):
+        """Handle /update command — pull, reinstall, prompt restart."""
+        import concurrent.futures
+        from acorn.updater import check_for_updates, pull_update, reinstall, get_current_version
+        t = self.theme_data
+        loop = asyncio.get_event_loop()
+
+        if args == 'check':
+            self._log(Text('  Checking for updates...', style=t['muted']))
+            self._scroll_bottom()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                result = await loop.run_in_executor(pool, check_for_updates)
+            if not result:
+                self._log(Text('  Could not check for updates', style=t.get('warning', 'yellow')))
+            elif result['available']:
+                self._log(Text(f'  ⬆ {result["behind"]} new commit(s) available ({result["local"]} → {result["remote"]})', style=t['accent']))
+                for h, msg in result['commits'][:10]:
+                    self._log(Text(f'    {h} {msg}', style=t['fg']))
+                self._log(Text(f'  Type /update to install', style=t['muted']))
+                self._pending_update = result
+            else:
+                self._log(Text(f'  ✓ Already up to date ({result["local"]})', style=t['success']))
+            self._scroll_bottom()
+            return
+
+        # Show what's available
+        info = getattr(self, '_pending_update', None)
+        if not info or not info.get('available'):
+            self._log(Text('  Checking for updates...', style=t['muted']))
+            self._scroll_bottom()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                info = await loop.run_in_executor(pool, check_for_updates)
+
+        if not info:
+            self._log(Text('  Could not check for updates (git fetch failed)', style=t.get('warning', 'yellow')))
+            self._scroll_bottom()
+            return
+
+        if not info['available']:
+            self._log(Text(f'  ✓ Already up to date ({info["local"]})', style=t['success']))
+            self._scroll_bottom()
+            return
+
+        self._log(Text(f'  ⬆ Pulling {info["behind"]} commit(s)...', style=t['accent']))
+        for h, msg in info['commits'][:10]:
+            self._log(Text(f'    {h} {msg}', style=t['fg']))
+        self._scroll_bottom()
+
+        # Pull
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            ok, output = await loop.run_in_executor(pool, pull_update)
+        if not ok:
+            self._log(Text(f'  ✗ Pull failed: {output}', style=t['error']))
+            self._scroll_bottom()
+            return
+        self._log(Text(f'  ✓ Pulled successfully', style=t['success']))
+
+        # Reinstall
+        self._log(Text(f'  Installing...', style=t['muted']))
+        self._scroll_bottom()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            ok, output = await loop.run_in_executor(pool, reinstall)
+        if not ok:
+            self._log(Text(f'  ✗ Install failed: {output}', style=t['error']))
+            self._scroll_bottom()
+            return
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            version = await loop.run_in_executor(pool, get_current_version)
+        self._log(Text(f'  ✓ Updated to v{version} — restart Acorn to use the new version', style=f'bold {t["success"]}'))
+        self._pending_update = None
+        self._scroll_bottom()
+
     def _log(self, renderable):
         try:
             self.query_one('#transcript', SelectableLog).write(renderable)
@@ -807,10 +904,15 @@ class AcornApp(App):
         elif cmd == '/approve-all':
             self.permissions.mode = 'auto'
             self._log(Text('  ⚡ Auto mode — all non-dangerous tools auto-approved', style='yellow'))
+        elif cmd == '/update':
+            await self._do_update(args)
+        elif cmd == '/approve-all-dangerous':
+            self.permissions.mode = 'yolo'
+            self._log(Text('  ☠ YOLO mode — everything auto-approved including dangerous commands', style='bold red'))
         elif cmd == '/mode':
-            if args in ('auto', 'ask', 'locked'):
+            if args in ('auto', 'ask', 'locked', 'yolo'):
                 self.permissions.mode = args
-                descs = {'auto': 'auto-approve (dangerous still asks)', 'ask': 'ask for each tool', 'locked': 'deny all writes/exec'}
+                descs = {'auto': 'auto-approve (dangerous still asks)', 'ask': 'ask for each tool', 'locked': 'deny all writes/exec', 'yolo': 'approve everything, no exceptions'}
                 self._log(Text(f'  Mode → {args}: {descs[args]}', style=t['accent']))
                 if self.permissions.session_rules:
                     self._log(Text(f'  Session rules: {", ".join(sorted(self.permissions.session_rules))}', style=t['muted']))
@@ -826,6 +928,7 @@ class AcornApp(App):
                 self._log(Text(f'  /mode auto     Auto-approve (dangerous still asks)', style=t['muted']))
                 self._log(Text(f'  /mode ask      Prompt for every tool', style=t['muted']))
                 self._log(Text(f'  /mode locked   Deny all writes/exec', style=t['muted']))
+                self._log(Text(f'  /mode yolo     Approve everything, no exceptions', style=t['muted']))
                 self._log(Text(f'  /mode rules    Show session allow rules', style=t['muted']))
         elif cmd == '/help':
             help_table = Table.grid(padding=(0, 2))
@@ -839,6 +942,9 @@ class AcornApp(App):
             help_table.add_row('/theme [name]', 'Switch theme')
             help_table.add_row('/mode [auto/ask/locked]', 'Tool approval mode')
             help_table.add_row('/approve-all', 'Shortcut for /mode auto')
+            help_table.add_row('/approve-all-dangerous', 'YOLO — approve everything')
+            help_table.add_row('/update', 'Pull & install latest version')
+            help_table.add_row('/update check', 'Check for updates without installing')
             help_table.add_row('/test [name]', 'Run UI tests')
             help_table.add_row('/bg', 'Background processes')
             help_table.add_row('/bg run <cmd>', 'Run command in background')

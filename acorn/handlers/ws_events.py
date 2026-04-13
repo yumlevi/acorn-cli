@@ -190,7 +190,7 @@ class WSEventsHandler:
             b.log(Text(f'  Agent has {len(questions)} question(s) for you', style=t['accent2']))
             b.scroll_bottom()
             b.get_questions_handler().start_questions(questions)
-        elif b.plan_mode and response and ('PLAN_READY' in response or len(response) > 500):
+        elif b.plan_mode and response and 'PLAN_READY' in response:
             plan_handler = b.get_plan_handler()
             plan_handler.state.last_plan_text = response
             plan_handler.show_choices()
