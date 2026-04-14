@@ -292,6 +292,7 @@ class AcornApp(App):
         self.conn.on('perm:set-mode', self.ws_handler.on_perm_mode)
         self.conn.on('perm:query', self.ws_handler.on_perm_query)
         self.conn.on('plan:set-mode', self.ws_handler.on_plan_mode)
+        self.conn.on('plan:decision', self.ws_handler.on_plan_decision)
 
         self.query_one('#user-input', MessageInput).focus()
 

@@ -1,6 +1,7 @@
 """Plan handler — owns plan state, communicates via bridge."""
 
 import asyncio
+import json
 import re
 from dataclasses import dataclass
 from rich.text import Text
@@ -69,6 +70,25 @@ class PlanHandler:
                          style=f'on {t["bg_panel"]}', padding=(0, 1)))
             b.scroll_bottom()
 
+    def _broadcast_decision(self, action, feedback=None):
+        """Broadcast plan decision to companion app observers."""
+        b = self.bridge
+        try:
+            msg = {'type': 'plan:decided', 'action': action}
+            if feedback:
+                msg['feedback'] = feedback
+            asyncio.ensure_future(b.conn.send(json.dumps(msg)))
+        except Exception:
+            pass
+
+    def _broadcast_plan_mode(self, enabled):
+        """Broadcast plan mode change to companion app observers."""
+        b = self.bridge
+        try:
+            asyncio.ensure_future(b.conn.send(json.dumps({'type': 'plan:set-mode', 'enabled': enabled})))
+        except Exception:
+            pass
+
     def handle_decision(self, text):
         b = self.bridge
         s = self.state
@@ -88,15 +108,19 @@ class PlanHandler:
             b.scroll_bottom()
 
             b.generating = True
-            # Force both footer and header to reflect EXEC mode
             b.update_footer()
             b.update_mode_bar()
             b.update_header()
             asyncio.create_task(b.conn.send(chat_message(b.session_id, PLAN_EXECUTE_MSG, b.user)))
 
+            # Notify observers
+            self._broadcast_decision('execute')
+            self._broadcast_plan_mode(False)
+
         elif text == '3' or text.lower().startswith('cancel'):
             b.log(b.themed_text('  Plan discarded', style=t['muted']))
             b.scroll_bottom()
+            self._broadcast_decision('cancel')
 
         else:
             feedback = text if text != '2' else ''
@@ -120,3 +144,6 @@ class PlanHandler:
             b.update_footer()
             b.update_header()
             asyncio.create_task(b.conn.send(chat_message(b.session_id, feedback_msg, b.user)))
+
+            # Notify observers
+            self._broadcast_decision('revise', feedback)

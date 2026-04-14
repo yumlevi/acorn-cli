@@ -253,6 +253,43 @@ class WSEventsHandler:
         else:
             b.slog.debug('ws', f'remote-approve for {tool_id} but no pending prompt')
 
+    async def on_plan_decision(self, msg):
+        """Handle plan decision from companion app (execute/revise/cancel)."""
+        b = self.bridge
+        t = b.theme
+        action = msg.get('action', '')
+        ph = b.get_plan_handler()
+
+        if action == 'execute':
+            b.log(b.themed_text('  → Execute (from mobile)', style=t['success']))
+            b.scroll_bottom()
+            # Dismiss CLI's plan selector if active
+            qh = b.get_questions_handler()
+            if qh.state.plan_approval:
+                qh.state.plan_approval = False
+                qh._exit()
+            ph.handle_decision('1')
+        elif action == 'revise':
+            feedback = msg.get('feedback', '')
+            b.log(b.themed_text(f'  → Revise (from mobile)', style=t['accent']))
+            b.scroll_bottom()
+            qh = b.get_questions_handler()
+            if qh.state.plan_approval:
+                qh.state.plan_approval = False
+                qh._exit()
+            if feedback:
+                ph.handle_decision(feedback)
+            else:
+                ph.handle_decision('2')
+        elif action == 'cancel':
+            b.log(b.themed_text('  → Cancel (from mobile)', style=t['muted']))
+            b.scroll_bottom()
+            qh = b.get_questions_handler()
+            if qh.state.plan_approval:
+                qh.state.plan_approval = False
+                qh._exit()
+            ph.handle_decision('3')
+
     async def on_plan_mode(self, msg):
         """Handle remote plan mode toggle from companion app."""
         b = self.bridge
