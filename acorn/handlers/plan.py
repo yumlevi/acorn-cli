@@ -111,7 +111,7 @@ class PlanHandler:
             b.update_footer()
             b.update_mode_bar()
             b.update_header()
-            asyncio.create_task(b.conn.send(chat_message(b.session_id, PLAN_EXECUTE_MSG, b.user)))
+            asyncio.create_task(b.conn.send(chat_message(b.session_id, PLAN_EXECUTE_MSG, b.user, cwd=b.cwd)))
 
             # Notify observers
             self._broadcast_decision('execute')
@@ -143,7 +143,7 @@ class PlanHandler:
             b.generating = True
             b.update_footer()
             b.update_header()
-            asyncio.create_task(b.conn.send(chat_message(b.session_id, feedback_msg, b.user)))
+            asyncio.create_task(b.conn.send(chat_message(b.session_id, feedback_msg, b.user, cwd=b.cwd)))
 
             # Notify observers
             self._broadcast_decision('revise', feedback)

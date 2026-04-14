@@ -3,13 +3,16 @@
 import json
 
 
-def chat_message(session_id: str, content: str, user_name: str) -> str:
-    return json.dumps({
+def chat_message(session_id: str, content: str, user_name: str, cwd: str = None) -> str:
+    msg = {
         'type': 'chat',
         'content': content,
         'sessionId': session_id,
         'userName': user_name,
-    })
+    }
+    if cwd:
+        msg['cwd'] = cwd
+    return json.dumps(msg)
 
 
 def tool_result_message(tool_id: str, result) -> str:

@@ -299,5 +299,5 @@ class QuestionsHandler:
         b.update_footer()
         b.update_header()
         asyncio.create_task(
-            b.conn.send(chat_message(b.session_id, formatted, b.user))
+            b.conn.send(chat_message(b.session_id, formatted, b.user, cwd=b.cwd))
         )

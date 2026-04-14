@@ -76,7 +76,7 @@ class ChatHandler:
             content = PLAN_PREFIX + content
 
         self.state.queued_message = None  # clear any stale queue
-        await b.conn.send(chat_message(b.session_id, content, b.user))
+        await b.conn.send(chat_message(b.session_id, content, b.user, cwd=b.cwd))
 
     async def send_message(self, text):
         """Send a message to the agent."""
@@ -101,4 +101,4 @@ class ChatHandler:
 
         b.update_footer()
         b.update_header()
-        await b.conn.send(chat_message(b.session_id, content, b.user))
+        await b.conn.send(chat_message(b.session_id, content, b.user, cwd=b.cwd))

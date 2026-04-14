@@ -231,7 +231,7 @@ async def send_and_stream(conn, session_id, user, content, renderer):
     conn.on('chat:tool', on_tool)
 
     renderer.start_streaming()
-    await conn.send(chat_message(session_id, content, user))
+    await conn.send(chat_message(session_id, content, user, cwd=cwd))
 
     try:
         await asyncio.wait_for(done_event.wait(), timeout=600)
