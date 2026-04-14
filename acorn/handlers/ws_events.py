@@ -333,3 +333,11 @@ class WSEventsHandler:
             b.log(b.themed_text(f'  Mode → {mode}: {descs[mode]} (set from mobile)', style=t['accent']))
             b.scroll_bottom()
             b.update_footer()
+            # Auto-resolve any pending permission prompt if switching to auto/yolo
+            if mode in ('auto', 'yolo'):
+                prompt_event = b.get_permission_attr('_prompt_event')
+                if prompt_event and not prompt_event.is_set():
+                    b.set_permission_attr('_prompt_result', {'index': 0, 'value': 'allow'})
+                    b.log(b.themed_text('  ✓ Pending prompt auto-resolved', style=t['success']))
+                    b.scroll_bottom()
+                    prompt_event.set()
