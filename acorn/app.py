@@ -683,6 +683,14 @@ class AcornApp(App):
         time.sleep(0.5)  # brief pause so user sees the message
         self._restart()
 
+    def _broadcast_perm_mode(self, mode):
+        """Broadcast permission mode change to companion app observers."""
+        import json
+        try:
+            asyncio.ensure_future(self.conn.send(json.dumps({'type': 'perm:set-mode', 'mode': mode})))
+        except Exception:
+            pass
+
     def _restart(self):
         """Replace current process with a fresh acorn invocation."""
         import os, sys
@@ -777,6 +785,12 @@ class AcornApp(App):
         mode = 'plan' if self.plan_mode else 'execute'
         t = self.theme_data
         self._log(Text(f'  Switched to {mode} mode', style=t['muted']))
+        # Broadcast to companion app
+        import json
+        try:
+            asyncio.ensure_future(self.conn.send(json.dumps({'type': 'plan:set-mode', 'enabled': self.plan_mode})))
+        except Exception:
+            pass
         self._scroll_bottom()
 
     def action_quit_check(self):
@@ -943,16 +957,19 @@ class AcornApp(App):
         elif cmd == '/approve-all':
             self.permissions.mode = 'auto'
             self._log(Text('  ⚡ Auto mode — all non-dangerous tools auto-approved', style='yellow'))
+            self._broadcast_perm_mode('auto')
         elif cmd == '/update':
             await self._do_update(args)
         elif cmd == '/approve-all-dangerous':
             self.permissions.mode = 'yolo'
             self._log(Text('  ☠ YOLO mode — everything auto-approved including dangerous commands', style='bold red'))
+            self._broadcast_perm_mode('yolo')
         elif cmd == '/mode':
             if args in ('auto', 'ask', 'locked', 'yolo'):
                 self.permissions.mode = args
                 descs = {'auto': 'auto-approve (dangerous still asks)', 'ask': 'ask for each tool', 'locked': 'deny all writes/exec', 'yolo': 'approve everything, no exceptions'}
                 self._log(Text(f'  Mode → {args}: {descs[args]}', style=t['accent']))
+                self._broadcast_perm_mode(args)
                 if self.permissions.session_rules:
                     self._log(Text(f'  Session rules: {", ".join(sorted(self.permissions.session_rules))}', style=t['muted']))
             elif args == 'rules':
