@@ -164,6 +164,20 @@ class TuiPermissions:
         else:
             options = ['✓ Allow', f'✓ Allow all {rule}', '✗ Deny']
 
+        # Notify companion app that we're waiting for approval
+        try:
+            import json, asyncio
+            conn = self.app.conn
+            if conn and conn.connected:
+                asyncio.ensure_future(conn.send(json.dumps({
+                    'type': 'tool:awaiting-approval',
+                    'name': tool_name,
+                    'summary': summary,
+                    'dangerous': dangerous,
+                })))
+        except Exception:
+            pass
+
         # Use PromptProvider — clean API, no monkeypatching
         result = await self.app.prompter.choice(f'Allow {tool_name}?', options)
 
