@@ -21,16 +21,19 @@ PLAN_PREFIX = (
     'Do actual searches — don\'t rely on stale training knowledge for fast-moving tools.\n\n'
 
     'PHASE 4 — CLARIFY:\n'
-    'If anything is still ambiguous, ask the user using this format:\n\n'
+    'If you have questions for the user, you MUST use this EXACT format with the QUESTIONS: marker on its own line. '
+    'Do NOT embed questions in the plan text. Ask them BEFORE presenting the plan.\n\n'
     'QUESTIONS:\n'
     '1. Single-select question? [Option A / Option B / Option C]\n'
     '2. Multi-select question? {Option A / Option B / Option C / Option D}\n'
     '3. Open-ended question?\n\n'
-    '[brackets] = single-select, {braces} = multi-select checkboxes, no brackets = open text. '
-    'Users can press Tab on any answer to add notes. Only ask if genuinely needed.\n\n'
+    'The QUESTIONS: marker is REQUIRED — without it the client cannot detect your questions. '
+    '[brackets] = single-select, {braces} = multi-select checkboxes, no brackets = open text input. '
+    'If you have questions, output ONLY the QUESTIONS: block and STOP — do NOT include PLAN_READY in the same response. '
+    'Wait for answers before presenting the plan.\n\n'
 
     'PHASE 5 — PLAN:\n'
-    'Present a detailed plan with:\n'
+    'Only after questions are answered (or if you have none), present a detailed plan with:\n'
     '  - Prerequisites (what needs to be installed/configured first)\n'
     '  - Step-by-step changes with file paths\n'
     '  - New files to create vs existing files to modify\n'
@@ -42,6 +45,7 @@ PLAN_PREFIX = (
     '- Do NOT make changes (no write_file, edit_file).\n'
     '- Do NOT run destructive or modifying commands.\n'
     '- You MAY use: read_file, glob, grep, web_search, web_fetch, exec (read-only commands only like ls, cat, which, --version).\n'
+    '- Do NOT put questions and PLAN_READY in the same response — ask first, then plan after answers.\n'
     '- End your plan with "PLAN_READY" on its own line.]\n\n'
 )
 

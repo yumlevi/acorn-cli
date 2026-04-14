@@ -253,6 +253,24 @@ class WSEventsHandler:
         else:
             b.slog.debug('ws', f'remote-approve for {tool_id} but no pending prompt')
 
+    def _dismiss_cli_selector(self):
+        """Dismiss any active question selector / plan approval UI on the CLI."""
+        b = self.bridge
+        qh = b.get_questions_handler()
+        # Dismiss questions handler if active
+        if qh.state.active or qh.state.plan_approval:
+            qh.state.plan_approval = False
+            qh.state.active = False
+            try:
+                qh._exit()
+            except Exception:
+                pass
+        # Also dismiss PromptProvider if active
+        prompt_event = b.get_permission_attr('_prompt_event')
+        if prompt_event and not prompt_event.is_set():
+            b.set_permission_attr('_prompt_result', {'cancelled': True})
+            prompt_event.set()
+
     async def on_plan_decision(self, msg):
         """Handle plan decision from companion app (execute/revise/cancel)."""
         b = self.bridge
@@ -260,23 +278,16 @@ class WSEventsHandler:
         action = msg.get('action', '')
         ph = b.get_plan_handler()
 
+        self._dismiss_cli_selector()
+
         if action == 'execute':
             b.log(b.themed_text('  → Execute (from mobile)', style=t['success']))
             b.scroll_bottom()
-            # Dismiss CLI's plan selector if active
-            qh = b.get_questions_handler()
-            if qh.state.plan_approval:
-                qh.state.plan_approval = False
-                qh._exit()
             ph.handle_decision('1')
         elif action == 'revise':
             feedback = msg.get('feedback', '')
             b.log(b.themed_text(f'  → Revise (from mobile)', style=t['accent']))
             b.scroll_bottom()
-            qh = b.get_questions_handler()
-            if qh.state.plan_approval:
-                qh.state.plan_approval = False
-                qh._exit()
             if feedback:
                 ph.handle_decision(feedback)
             else:
@@ -284,10 +295,6 @@ class WSEventsHandler:
         elif action == 'cancel':
             b.log(b.themed_text('  → Cancel (from mobile)', style=t['muted']))
             b.scroll_bottom()
-            qh = b.get_questions_handler()
-            if qh.state.plan_approval:
-                qh.state.plan_approval = False
-                qh._exit()
             ph.handle_decision('3')
 
     async def on_plan_mode(self, msg):
