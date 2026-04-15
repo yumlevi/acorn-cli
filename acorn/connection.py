@@ -114,6 +114,13 @@ class Connection:
                 msg_type = msg.get('type', '')
 
                 if msg_type == 'tool:request' and self.tool_executor:
+                    # Acknowledge immediately so server knows we're alive
+                    tool_id = msg.get('id', '')
+                    if tool_id:
+                        try:
+                            await self.send(json.dumps({'type': 'tool:ack', 'id': tool_id}))
+                        except Exception:
+                            pass
                     asyncio.create_task(self._handle_tool_request(msg))
                     continue
 
