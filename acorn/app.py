@@ -971,6 +971,7 @@ class AcornApp(App):
                     self._log(Text(f'  Usage: /delegate workers <number>', style='red'))
             elif args in valid:
                 self.ctx_manager.delegation_mode = args
+                self.executor.delegation_mode = args
                 descs = {'default': 'research+bg ok, orchestration stays local', 'off': 'no delegation at all',
                          'research': 'only parallel research', 'code': 'research + parallel writes', 'all': 'unrestricted'}
                 self._log(Text(f'  Delegation → {args}: {descs.get(args, "")}', style=t['accent']))

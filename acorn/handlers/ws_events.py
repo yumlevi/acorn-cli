@@ -322,6 +322,8 @@ class WSEventsHandler:
         from acorn.context import DELEGATION_POLICIES
         if mode and mode in DELEGATION_POLICIES:
             b.ctx_manager.delegation_mode = mode
+            if hasattr(b._app, 'executor'):
+                b._app.executor.delegation_mode = mode
             b.log(b.themed_text(f'  Delegation → {mode} (set from mobile)', style=t['accent']))
         if workers is not None:
             try:

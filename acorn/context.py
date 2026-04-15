@@ -240,6 +240,10 @@ def gather_context(cwd: str) -> str:
     parts.append(f'[SCOPE: You are working on the "{project}" project at {cwd}. '
                  f'Focus only on this project. Do NOT reference, continue, or plan work from other projects '
                  f'unless the user explicitly asks about them.]')
+    parts.append(f'[CWD ENFORCEMENT: ALL file operations (read_file, write_file, edit_file, exec) '
+                 f'are sandboxed to {cwd}. Paths outside {cwd} will be REJECTED by the tool executor. '
+                 f'Do NOT use /workspace/ or any server-side path — those are inside the Anima container '
+                 f'and will be lost on restart. Write everything to {cwd} on the user\'s machine.]')
 
     if git_root:
         branch = _git('branch --show-current', git_root)

@@ -26,9 +26,29 @@ class ToolExecutor:
         self.renderer = renderer
         self.cwd = cwd
         self.process_manager = process_manager
+        self.delegation_mode = 'default'  # synced from ContextManager
 
     async def execute(self, name: str, input: dict) -> "dict | None":
         """Execute a tool locally. Returns None to signal server-side fallback."""
+
+        # Enforce delegation restrictions — intercept delegate_task before server handles it
+        if name == 'delegate_task':
+            mode = self.delegation_mode
+            if mode == 'off':
+                return {'error': 'Delegation is disabled. Do this task yourself inline using the available tools (read_file, write_file, exec, etc.).'}
+            if mode == 'research':
+                task_desc = (input.get('task', '') + ' ' + input.get('context', '')).lower()
+                has_write = any(w in task_desc for w in ['write', 'create file', 'edit file', 'generate code', 'build', 'implement', 'scaffold'])
+                if has_write:
+                    return {'error': 'Delegation mode is "research" — you can only delegate web research, not file writes. Write the code yourself using write_file/edit_file so it lands on the user\'s machine.'}
+            if mode == 'default':
+                task_desc = (input.get('task', '') + ' ' + input.get('context', '')).lower()
+                has_orchestration = any(w in task_desc for w in ['build the', 'implement the', 'create the project', 'scaffold', 'set up the'])
+                if has_orchestration:
+                    return {'error': 'Delegation mode is "default" — do not delegate main task orchestration. Stay interactive with the user. You may delegate parallel research or parallel file writes only.'}
+            # Allow — let server handle
+            return None
+
         if name in SERVER_TOOLS or name not in LOCAL_TOOLS:
             return None
 
