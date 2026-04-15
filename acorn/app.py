@@ -645,7 +645,9 @@ class AcornApp(App):
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                 result = await loop.run_in_executor(pool, check_for_updates)
             if not result:
-                self._log(Text('  Could not check for updates — git fetch failed (check remote/credentials)', style=t.get('muted', 'dim')))
+                from acorn.updater import _last_git_error
+                err = f': {_last_git_error}' if _last_git_error else ''
+                self._log(Text(f'  Could not check for updates{err}', style=t.get('muted', 'dim')))
             elif result['available']:
                 self._log(Text(f'  ⬆ {result["behind"]} new commit(s) available ({result["local"]} → {result["remote"]})', style=t['accent']))
                 for h, msg in result['commits'][:10]:
@@ -666,7 +668,9 @@ class AcornApp(App):
                 info = await loop.run_in_executor(pool, check_for_updates)
 
         if not info:
-            self._log(Text('  Could not check for updates — git fetch failed (check remote/credentials)', style=t.get('muted', 'dim')))
+            from acorn.updater import _last_git_error
+            err = f': {_last_git_error}' if _last_git_error else ''
+            self._log(Text(f'  Could not check for updates{err}', style=t.get('muted', 'dim')))
             self._scroll_bottom()
             return
 

@@ -9,16 +9,23 @@ def get_repo_dir():
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+_last_git_error = ''
+
 def _git(args, cwd=None):
     """Run a git command and return stdout, or None on failure."""
+    global _last_git_error
     try:
         r = subprocess.run(
             ['git'] + args,
             cwd=cwd or get_repo_dir(),
             capture_output=True, text=True, timeout=15,
         )
-        return r.stdout.strip() if r.returncode == 0 else None
-    except Exception:
+        if r.returncode == 0:
+            return r.stdout.strip()
+        _last_git_error = (r.stderr or r.stdout).strip()
+        return None
+    except Exception as e:
+        _last_git_error = str(e)
         return None
 
 
