@@ -23,60 +23,72 @@ class PromptProvider:
         self.app = app
         self._event = None
         self._result = None
+        self._lock = asyncio.Lock()
 
-    async def choice(self, prompt: str, options: list, multi: bool = False) -> dict:
+    async def choice(self, prompt: str, options: list, multi: bool = False, on_show=None) -> dict:
         """Show options in the selector widget, wait for user choice.
+
+        Serialized with a lock — only one prompt at a time. When parallel
+        tools need approval, they queue up and show one after another.
 
         Returns:
             Single-select: {'index': int, 'value': str}
             Multi-select:  {'indices': list[int], 'values': list[str]}
             Cancelled:     {'cancelled': True}
         """
-        app = self.app
-        t = app.theme_data
+        async with self._lock:
+            app = self.app
+            t = app.theme_data
 
-        # Show prompt in transcript
-        app._log(Text(f'  {prompt}', style=f'bold {t["accent"]}'))
-        app._scroll_bottom()
+            # Notify caller that prompt is about to show (inside lock)
+            if on_show:
+                try:
+                    on_show()
+                except Exception:
+                    pass
 
-        # Set up the selector
-        app._q_selected = 0
-        app._q_checked = set()
-        app._q_noting = False
-        app._q_open_ended = False
-        app._q_transitioning = False
+            # Show prompt in transcript
+            app._log(Text(f'  {prompt}', style=f'bold {t["accent"]}'))
+            app._scroll_bottom()
 
-        # Store prompt state for the selector
-        app._prompt_options = options
-        app._prompt_multi = multi
-        app._prompt_event = asyncio.Event()
-        app._prompt_result = None
-        app._prompt_active = True
+            # Set up the selector
+            app._q_selected = 0
+            app._q_checked = set()
+            app._q_noting = False
+            app._q_open_ended = False
+            app._q_transitioning = False
 
-        # Render and show
-        self._render_selector(options, multi)
-        app._hide_widget('#user-input')
-        app._show_widget('#question-selector')
-        try:
-            from acorn.ui.widgets import FocusableStatic
-            app.query_one('#question-selector', FocusableStatic).focus()
-        except Exception:
-            pass
+            # Store prompt state for the selector
+            app._prompt_options = options
+            app._prompt_multi = multi
+            app._prompt_event = asyncio.Event()
+            app._prompt_result = None
+            app._prompt_active = True
 
-        # Wait for user interaction
-        await app._prompt_event.wait()
+            # Render and show
+            self._render_selector(options, multi)
+            app._hide_widget('#user-input')
+            app._show_widget('#question-selector')
+            try:
+                from acorn.ui.widgets import FocusableStatic
+                app.query_one('#question-selector', FocusableStatic).focus()
+            except Exception:
+                pass
 
-        # Cleanup
-        app._prompt_active = False
-        app._hide_widget('#question-selector')
-        app._show_widget('#user-input')
-        try:
-            from acorn.ui.widgets import MessageInput
-            app.query_one('#user-input', MessageInput).focus()
-        except Exception:
-            pass
+            # Wait for user interaction
+            await app._prompt_event.wait()
 
-        return app._prompt_result or {'cancelled': True}
+            # Cleanup
+            app._prompt_active = False
+            app._hide_widget('#question-selector')
+            app._show_widget('#user-input')
+            try:
+                from acorn.ui.widgets import MessageInput
+                app.query_one('#user-input', MessageInput).focus()
+            except Exception:
+                pass
+
+            return app._prompt_result or {'cancelled': True}
 
     def _render_selector(self, options, multi):
         """Render options in the question-selector widget."""

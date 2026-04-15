@@ -132,6 +132,21 @@ class TuiPermissions:
                 return True
         return False
 
+    def _notify_companion(self, tool_name, summary, dangerous):
+        """Send tool:awaiting-approval to companion app."""
+        try:
+            import json, asyncio
+            conn = self.app.conn
+            if conn and conn.connected:
+                asyncio.ensure_future(conn.send(json.dumps({
+                    'type': 'tool:awaiting-approval',
+                    'name': tool_name,
+                    'summary': summary,
+                    'dangerous': dangerous,
+                })))
+        except Exception:
+            pass
+
     async def prompt(self, tool_name: str, input: dict) -> bool:
         """Show approval UI. Uses TUI selector if app is available, console prompt otherwise."""
         summary = summarize(tool_name, input)
@@ -164,22 +179,13 @@ class TuiPermissions:
         else:
             options = ['✓ Allow', f'✓ Allow all {rule}', '✗ Deny']
 
-        # Notify companion app that we're waiting for approval
-        try:
-            import json, asyncio
-            conn = self.app.conn
-            if conn and conn.connected:
-                asyncio.ensure_future(conn.send(json.dumps({
-                    'type': 'tool:awaiting-approval',
-                    'name': tool_name,
-                    'summary': summary,
-                    'dangerous': dangerous,
-                })))
-        except Exception:
-            pass
-
-        # Use PromptProvider — clean API, no monkeypatching
-        result = await self.app.prompter.choice(f'Allow {tool_name}?', options)
+        # Use PromptProvider — serialized with lock, one prompt at a time.
+        # Notify companion app right before showing the prompt (inside the lock
+        # ensures only one notification at a time, matching one prompt at a time).
+        result = await self.app.prompter.choice(
+            f'Allow {tool_name}?', options,
+            on_show=lambda: self._notify_companion(tool_name, summary, dangerous),
+        )
 
         if result.get('cancelled'):
             return False
