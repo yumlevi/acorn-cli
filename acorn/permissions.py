@@ -135,15 +135,8 @@ class TuiPermissions:
     def _notify_companion(self, tool_name, summary, dangerous):
         """Send tool:awaiting-approval to companion app."""
         try:
-            import json, asyncio
-            conn = self.app.conn
-            if conn and conn.connected:
-                asyncio.ensure_future(conn.send(json.dumps({
-                    'type': 'tool:awaiting-approval',
-                    'name': tool_name,
-                    'summary': summary,
-                    'dangerous': dangerous,
-                })))
+            self.app.bridge.broadcast('tool:awaiting-approval',
+                name=tool_name, summary=summary, dangerous=dangerous)
         except Exception:
             pass
 

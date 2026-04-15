@@ -784,11 +784,7 @@ class AcornApp(App):
         t = self.theme_data
         self._log(Text(f'  Switched to {mode} mode', style=t['muted']))
         # Broadcast to companion app
-        import json
-        try:
-            asyncio.ensure_future(self.conn.send(json.dumps({'type': 'plan:set-mode', 'enabled': self.plan_mode})))
-        except Exception:
-            pass
+        self.bridge.broadcast('plan:set-mode', enabled=self.plan_mode)
         self._scroll_bottom()
 
     def action_quit_check(self):

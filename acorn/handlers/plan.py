@@ -76,21 +76,14 @@ class PlanHandler:
     def _broadcast_decision(self, action, feedback=None):
         """Broadcast plan decision to companion app observers."""
         b = self.bridge
-        try:
-            msg = {'type': 'plan:decided', 'action': action}
-            if feedback:
-                msg['feedback'] = feedback
-            asyncio.ensure_future(b.conn.send(json.dumps(msg)))
-        except Exception:
-            pass
+        kwargs = {'action': action}
+        if feedback:
+            kwargs['feedback'] = feedback
+        b.broadcast('plan:decided', **kwargs)
 
     def _broadcast_plan_mode(self, enabled):
         """Broadcast plan mode change to companion app observers."""
-        b = self.bridge
-        try:
-            asyncio.ensure_future(b.conn.send(json.dumps({'type': 'plan:set-mode', 'enabled': enabled})))
-        except Exception:
-            pass
+        self.bridge.broadcast('plan:set-mode', enabled=enabled)
 
     def handle_decision(self, text):
         b = self.bridge
