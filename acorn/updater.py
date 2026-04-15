@@ -42,6 +42,10 @@ def check_for_updates():
     """
     repo = get_repo_dir()
 
+    # Not a git repo (installed via pip, not git clone)
+    if not os.path.isdir(os.path.join(repo, '.git')):
+        return None
+
     # Check if we even have a remote configured
     remote_url = _git(['remote', 'get-url', 'origin'], repo)
     if not remote_url:
