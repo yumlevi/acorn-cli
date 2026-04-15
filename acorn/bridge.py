@@ -220,7 +220,9 @@ class AppBridge:
         """Send a message to all session observers (companion app)."""
         import json, asyncio
         try:
-            payload = {'type': msg_type, **kwargs}
-            asyncio.ensure_future(self.conn.send(json.dumps(payload)))
+            payload = json.dumps({'type': msg_type, **kwargs})
+            conn = self._app.conn
+            if conn and conn.connected:
+                asyncio.create_task(conn.send(payload))
         except Exception:
             pass

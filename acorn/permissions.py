@@ -208,7 +208,10 @@ class TuiPermissions:
         # Broadcast to companion app so approval cards dismiss
         try:
             self.app.bridge.broadcast('interactive:resolved', kind='tool-approval', allowed=allowed)
-        except Exception:
-            pass
+        except Exception as e:
+            try:
+                self.app._log(Text(f'  [debug] broadcast failed: {e}', style='dim'))
+            except:
+                pass
 
         return allowed
