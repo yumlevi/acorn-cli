@@ -36,6 +36,9 @@ class PlanHandler:
         if self.state.last_plan_text:
             self._show_file_summary(self.state.last_plan_text)
 
+        # Broadcast to companion app so it shows plan approval too
+        b.broadcast('plan:show-approval', text=self.state.last_plan_text[:2000])
+
         # Use questions handler for the selector
         qh = b.get_questions_handler()
         qh.state.plan_approval = True

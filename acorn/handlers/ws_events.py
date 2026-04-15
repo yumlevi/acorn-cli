@@ -326,14 +326,18 @@ class WSEventsHandler:
         b.update_header()
 
     async def on_perm_query(self, msg):
-        """Respond to perm mode query from server (when observer joins)."""
+        """Respond to state query from server (when observer joins). Send perm mode + plan mode."""
         b = self.bridge
         import json, asyncio
         mode = b.permissions.mode if hasattr(b, 'permissions') else 'auto'
         try:
-            asyncio.ensure_future(b.conn.send(json.dumps({
+            asyncio.create_task(b.conn.send(json.dumps({
                 'type': 'perm:current-mode',
                 'mode': mode,
+            })))
+            asyncio.create_task(b.conn.send(json.dumps({
+                'type': 'plan:set-mode',
+                'enabled': b.plan_mode,
             })))
         except Exception:
             pass
