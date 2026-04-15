@@ -635,21 +635,25 @@ class AcornApp(App):
     async def _do_update(self, args=''):
         """Handle /update command — pull, reinstall, prompt restart."""
         import concurrent.futures
-        from acorn.updater import check_for_updates, pull_update, reinstall, get_current_version
+        from acorn.updater import check_for_updates, pull_update, pip_update, reinstall, get_current_version
         t = self.theme_data
         loop = asyncio.get_event_loop()
+
+        async def _run(fn, *a):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return await loop.run_in_executor(pool, fn, *a)
 
         if args == 'check':
             self._log(Text('  Checking for updates...', style=t['muted']))
             self._scroll_bottom()
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                result = await loop.run_in_executor(pool, check_for_updates)
+            result = await _run(check_for_updates)
             if not result:
-                from acorn.updater import _last_git_error
-                err = f': {_last_git_error}' if _last_git_error else ''
+                from acorn.updater import _last_error
+                err = f': {_last_error}' if _last_error else ''
                 self._log(Text(f'  Could not check for updates{err}', style=t.get('muted', 'dim')))
             elif result['available']:
-                self._log(Text(f'  ⬆ {result["behind"]} new commit(s) available ({result["local"]} → {result["remote"]})', style=t['accent']))
+                via = result.get('method', 'git')
+                self._log(Text(f'  ⬆ {result["behind"]} new commit(s) available ({result["local"]} → {result["remote"]}) [{via}]', style=t['accent']))
                 for h, msg in result['commits'][:10]:
                     self._log(Text(f'    {h} {msg}', style=t['fg']))
                 self._log(Text(f'  Type /update to install', style=t['muted']))
@@ -664,12 +668,11 @@ class AcornApp(App):
         if not info or not info.get('available'):
             self._log(Text('  Checking for updates...', style=t['muted']))
             self._scroll_bottom()
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                info = await loop.run_in_executor(pool, check_for_updates)
+            info = await _run(check_for_updates)
 
         if not info:
-            from acorn.updater import _last_git_error
-            err = f': {_last_git_error}' if _last_git_error else ''
+            from acorn.updater import _last_error
+            err = f': {_last_error}' if _last_error else ''
             self._log(Text(f'  Could not check for updates{err}', style=t.get('muted', 'dim')))
             self._scroll_bottom()
             return
@@ -679,32 +682,35 @@ class AcornApp(App):
             self._scroll_bottom()
             return
 
-        self._log(Text(f'  ⬆ Pulling {info["behind"]} commit(s)...', style=t['accent']))
+        method = info.get('method', 'git')
+        self._log(Text(f'  ⬆ Updating ({info["behind"]} commit(s))...', style=t['accent']))
         for h, msg in info['commits'][:10]:
             self._log(Text(f'    {h} {msg}', style=t['fg']))
         self._scroll_bottom()
 
-        # Pull
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            ok, output = await loop.run_in_executor(pool, pull_update)
-        if not ok:
-            self._log(Text(f'  ✗ Pull failed: {output}', style=t['error']))
+        if method == 'git':
+            # Git: pull then reinstall editable
+            ok, output = await _run(pull_update)
+            if not ok:
+                self._log(Text(f'  ✗ Pull failed: {output}', style=t['error']))
+                self._scroll_bottom()
+                return
+            self._log(Text(f'  ✓ Pulled', style=t['success']))
+            self._log(Text(f'  Installing...', style=t['muted']))
             self._scroll_bottom()
-            return
-        self._log(Text(f'  ✓ Pulled successfully', style=t['success']))
+            ok, output = await _run(reinstall)
+        else:
+            # Pip: install directly from GitHub
+            self._log(Text(f'  Installing from GitHub...', style=t['muted']))
+            self._scroll_bottom()
+            ok, output = await _run(pip_update)
 
-        # Reinstall
-        self._log(Text(f'  Installing...', style=t['muted']))
-        self._scroll_bottom()
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            ok, output = await loop.run_in_executor(pool, reinstall)
         if not ok:
             self._log(Text(f'  ✗ Install failed: {output}', style=t['error']))
             self._scroll_bottom()
             return
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            version = await loop.run_in_executor(pool, get_current_version)
+        version = await _run(get_current_version)
         self._log(Text(f'  ✓ Updated to v{version} — restarting...', style=f'bold {t["success"]}'))
         self._pending_update = None
         self._scroll_bottom()
