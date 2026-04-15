@@ -247,7 +247,13 @@ def gather_context(cwd: str) -> str:
     parts.append('[WORK STYLE: Work incrementally — one or two tool calls per turn, not six. '
                  'After each file write or command, briefly tell the user what you did and what\'s next. '
                  'Do NOT batch many write_file calls in a single response — the user can\'t see progress '
-                 'and it takes too long to generate. Write one file, confirm, move to the next.]')
+                 'and it takes too long to generate. Write one file, confirm, move to the next.\n'
+                 'LONG COMMANDS: For commands that take a while (npm install, builds, large downloads), '
+                 'run them with exec, then use the sleep tool to wait and check output. Example workflow:\n'
+                 '1. exec: npm install (with timeout)\n'
+                 '2. Tell user: "Installing deps, this may take a minute..."\n'
+                 '3. Check the result, report success/failure, then continue.\n'
+                 'This keeps the user informed instead of going silent for 2 minutes.]')
 
     if git_root:
         branch = _git('branch --show-current', git_root)
