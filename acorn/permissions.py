@@ -206,11 +206,20 @@ class TuiPermissions:
         self.app._scroll_bottom()
 
         # Broadcast to companion app so approval cards dismiss
+        import json as _json, asyncio as _asyncio
         try:
-            self.app.bridge.broadcast('interactive:resolved', kind='tool-approval', allowed=allowed)
+            _conn = self.app.conn
+            _connected = _conn.connected if _conn else False
+            self.app._log(Text(f'  [debug] broadcast: conn={_conn is not None}, connected={_connected}', style='dim'))
+            if _conn and _connected:
+                payload = _json.dumps({'type': 'interactive:resolved', 'kind': 'tool-approval', 'allowed': allowed})
+                _asyncio.create_task(_conn.send(payload))
+                self.app._log(Text(f'  [debug] broadcast sent', style='dim'))
+            else:
+                self.app._log(Text(f'  [debug] broadcast skipped - not connected', style='dim'))
         except Exception as e:
             try:
-                self.app._log(Text(f'  [debug] broadcast failed: {e}', style='dim'))
+                self.app._log(Text(f'  [debug] broadcast error: {e}', style='dim'))
             except:
                 pass
 
