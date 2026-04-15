@@ -326,19 +326,70 @@ class WSEventsHandler:
         b.update_header()
 
     async def on_perm_query(self, msg):
-        """Respond to state query from server (when observer joins). Send perm mode + plan mode."""
+        """Respond to state query from server (when observer joins).
+        Send full interactive state: perm mode, plan mode, active prompts."""
         b = self.bridge
         import json, asyncio
         mode = b.permissions.mode if hasattr(b, 'permissions') else 'auto'
         try:
+            # Perm mode
             asyncio.create_task(b.conn.send(json.dumps({
                 'type': 'perm:current-mode',
                 'mode': mode,
             })))
+            # Plan mode
             asyncio.create_task(b.conn.send(json.dumps({
                 'type': 'plan:set-mode',
                 'enabled': b.plan_mode,
             })))
+            # Active plan approval
+            ph = b.get_plan_handler()
+            qh = b.get_questions_handler()
+            if qh.state.plan_approval and ph.state.last_plan_text:
+                asyncio.create_task(b.conn.send(json.dumps({
+                    'type': 'plan:show-approval',
+                    'text': ph.state.last_plan_text[:2000],
+                })))
+            # Active permission prompt
+            elif getattr(b._app, '_prompt_active', False):
+                opts = getattr(b._app, '_prompt_options', [])
+                tool_name = ''
+                summary = ''
+                # Try to extract from the last log entry
+                for opt in opts:
+                    if 'Allow' in opt:
+                        break
+                asyncio.create_task(b.conn.send(json.dumps({
+                    'type': 'tool:awaiting-approval',
+                    'name': 'tool',
+                    'summary': 'awaiting approval on CLI',
+                    'dangerous': False,
+                })))
+            # Active questions (not plan approval, not permission)
+            elif qh.state.active and not qh.state.plan_approval and qh.state.questions:
+                questions = []
+                for q in qh.state.questions[qh.state.current_idx:]:
+                    questions.append({
+                        'text': q.get('text', ''),
+                        'options': q.get('options'),
+                        'multi': q.get('multi', False),
+                        'index': q.get('index', 0),
+                    })
+                if questions:
+                    # Build a fake response with QUESTIONS: marker so the mobile parses it
+                    q_lines = ['QUESTIONS:']
+                    for q in questions:
+                        opts = ''
+                        if q['options']:
+                            if q['multi']:
+                                opts = ' {' + ' / '.join(q['options']) + '}'
+                            else:
+                                opts = ' [' + ' / '.join(q['options']) + ']'
+                        q_lines.append(f"{q['index']}. {q['text']}{opts}")
+                    asyncio.create_task(b.conn.send(json.dumps({
+                        'type': 'state:questions',
+                        'questions': questions,
+                    })))
         except Exception:
             pass
 
