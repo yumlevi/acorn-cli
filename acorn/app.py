@@ -249,7 +249,7 @@ class AcornApp(App):
         self._spinner_frame = 0
         self._spinner_timer = None
         self._answering_questions = False  # legacy compat for FocusableStatic
-        self.process_manager = ProcessManager()
+        self.process_manager = ProcessManager(log_dir=os.path.join(cwd, '.acorn', 'logs'))
         self.prompter = PromptProvider(self)
         import atexit
         atexit.register(lambda: self.process_manager.kill_all())

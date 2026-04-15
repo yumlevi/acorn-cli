@@ -4,20 +4,23 @@ import asyncio
 import time
 import os
 from collections import deque
+from pathlib import Path
 
 
 class BackgroundProcess:
     """A single background process with captured output."""
 
-    def __init__(self, pid, command, proc):
+    def __init__(self, pid, command, proc, log_path=None):
         self.id = pid
         self.command = command
         self.proc = proc
-        self.output = deque(maxlen=500)  # last 500 lines
+        self.output = deque(maxlen=500)  # last 500 lines in memory
+        self.log_path = log_path  # persistent file on disk
         self.started = time.time()
         self.ended = None
         self.exit_code = None
         self._task = None
+        self._log_file = None
 
     @property
     def running(self):
@@ -43,9 +46,12 @@ class BackgroundProcess:
 class ProcessManager:
     """Manages background processes launched by the agent or user."""
 
-    def __init__(self):
+    def __init__(self, log_dir=None):
         self._processes = {}
         self._next_id = 1
+        self._log_dir = Path(log_dir) if log_dir else None
+        if self._log_dir:
+            self._log_dir.mkdir(parents=True, exist_ok=True)
 
     async def launch(self, command: str, cwd: str) -> BackgroundProcess:
         """Launch a command in the background and start capturing output."""
@@ -56,19 +62,41 @@ class ProcessManager:
         )
         pid = self._next_id
         self._next_id += 1
-        bp = BackgroundProcess(pid, command, proc)
+
+        log_path = None
+        if self._log_dir:
+            log_path = str(self._log_dir / f'bg-{pid}.log')
+
+        bp = BackgroundProcess(pid, command, proc, log_path=log_path)
+
+        # Open log file for writing
+        if log_path:
+            try:
+                bp._log_file = open(log_path, 'w', buffering=1)
+                bp._log_file.write(f'# Command: {command}\n')
+                bp._log_file.write(f'# Started: {time.strftime("%Y-%m-%d %H:%M:%S")}\n')
+                bp._log_file.write(f'# CWD: {cwd}\n\n')
+            except Exception:
+                bp._log_file = None
+
         self._processes[pid] = bp
         bp._task = asyncio.create_task(self._read_output(bp))
         return bp
 
     async def _read_output(self, bp: BackgroundProcess):
-        """Read stdout lines and store in the process buffer."""
+        """Read stdout lines, store in memory buffer and write to log file."""
         try:
             while True:
                 line = await bp.proc.stdout.readline()
                 if not line:
                     break
-                bp.output.append(line.decode('utf-8', errors='replace').rstrip('\n'))
+                decoded = line.decode('utf-8', errors='replace').rstrip('\n')
+                bp.output.append(decoded)
+                if bp._log_file:
+                    try:
+                        bp._log_file.write(decoded + '\n')
+                    except Exception:
+                        pass
         except Exception:
             pass
         finally:
@@ -78,6 +106,13 @@ class ProcessManager:
                 pass
             bp.exit_code = bp.proc.returncode
             bp.ended = time.time()
+            if bp._log_file:
+                try:
+                    bp._log_file.write(f'\n# Exited: code={bp.exit_code} at {time.strftime("%Y-%m-%d %H:%M:%S")}\n')
+                    bp._log_file.close()
+                except Exception:
+                    pass
+                bp._log_file = None
 
     def list_all(self):
         """Return all processes (running + finished)."""

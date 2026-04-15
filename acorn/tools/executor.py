@@ -27,6 +27,9 @@ class ToolExecutor:
         self.cwd = cwd
         self.process_manager = process_manager
         self.delegation_mode = 'default'  # synced from ContextManager
+        # Log dir for exec output files — .acorn/logs/ in the project
+        import os
+        self._log_dir = os.path.join(cwd, '.acorn', 'logs')
 
     async def execute(self, name: str, input: dict) -> "dict | None":
         """Execute a tool locally. Returns None to signal server-side fallback."""
@@ -64,7 +67,7 @@ class ToolExecutor:
         elif name == 'edit_file':
             return file_ops.edit_file(input, self.cwd)
         elif name == 'exec':
-            return await shell.execute(input, self.cwd, process_manager=self.process_manager)
+            return await shell.execute(input, self.cwd, process_manager=self.process_manager, log_dir=self._log_dir)
         elif name == 'glob':
             return search.glob_search(input, self.cwd)
         elif name == 'grep':
