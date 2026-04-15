@@ -3,6 +3,32 @@
 import re
 
 
+def _split_options(s: str) -> list:
+    """Split on ' / ' but not inside parentheses."""
+    options = []
+    depth = 0
+    current = ''
+    i = 0
+    while i < len(s):
+        if s[i] == '(':
+            depth += 1
+            current += s[i]
+        elif s[i] == ')':
+            depth = max(0, depth - 1)
+            current += s[i]
+        elif depth == 0 and s[i:i+3] == ' / ':
+            options.append(current.strip())
+            current = ''
+            i += 3
+            continue
+        else:
+            current += s[i]
+        i += 1
+    if current.strip():
+        options.append(current.strip())
+    return [o for o in options if o]
+
+
 def parse_questions(text: str) -> list:
     """Parse structured questions ONLY from an explicit QUESTIONS: block.
 
@@ -48,7 +74,7 @@ def parse_questions(text: str) -> list:
         multi_match = re.search(r'\{([^}]+ / [^}]+)\}', raw)
         if multi_match:
             opts_str = multi_match.group(1)
-            options = [o.strip() for o in opts_str.split(' / ') if o.strip()]
+            options = _split_options(opts_str)
             question_text = raw[:multi_match.start()].strip().rstrip('?').strip() + '?'
             multi = True
         else:
@@ -56,7 +82,7 @@ def parse_questions(text: str) -> list:
             single_match = re.search(r'\[([^\]]+ / [^\]]+)\]', raw)
             if single_match:
                 opts_str = single_match.group(1)
-                options = [o.strip() for o in opts_str.split(' / ') if o.strip()]
+                options = _split_options(opts_str)
                 question_text = raw[:single_match.start()].strip().rstrip('?').strip() + '?'
             else:
                 question_text = raw.rstrip('?').strip() + '?'
