@@ -148,10 +148,10 @@ class Connection:
         """Periodic ping to detect dead connections early."""
         while self.connected:
             try:
-                await asyncio.sleep(25)
+                await asyncio.sleep(15)
                 if self.ws and self.connected:
                     pong = await self.ws.ping()
-                    await asyncio.wait_for(pong, timeout=10)
+                    await asyncio.wait_for(pong, timeout=5)
             except (asyncio.TimeoutError, websockets.ConnectionClosed, Exception):
                 if self._slog:
                     self._slog.warn('ws', 'heartbeat failed — reconnecting')
