@@ -153,46 +153,47 @@ def _check_git():
             'behind': len(commits), 'commits': commits, 'method': 'git'}
 
 
-def _check_github_api():
-    """Pip-based update check — compare against GitHub commits."""
+def _fetch_remote_version():
+    """Fetch the version string from pyproject.toml on GitHub main branch."""
+    import urllib.request
     global _last_error
-
-    # Get latest commits from GitHub
-    data = _fetch_github_json('commits?per_page=10&sha=main')
-    if not data or not isinstance(data, list):
+    url = f'https://raw.githubusercontent.com/{GITHUB_REPO}/main/pyproject.toml'
+    try:
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            content = resp.read().decode()
+            m = re.search(r'version\s*=\s*"(.+?)"', content)
+            return m.group(1) if m else None
+    except Exception as e:
+        _last_error = str(e)
         return None
 
-    remote_hash = data[0]['sha'][:7] if data else '?'
-    remote_commits = [(c['sha'][:7], (c.get('commit', {}).get('message', '') or '').split('\n')[0])
-                      for c in data]
 
-    # Try to find our local commit to see how far behind we are
-    local_hash = _get_local_commit()
-    if not local_hash:
-        # No git — use version string as identifier
-        local_hash = f'v{get_current_version()}'
+def _check_github_api():
+    """Pip-based update check — compare versions + show recent commits."""
+    global _last_error
 
-    # Check if we're up to date by comparing hashes
-    if local_hash == remote_hash:
-        return {'available': False, 'local': local_hash, 'remote': remote_hash,
+    local_version = get_current_version()
+    remote_version = _fetch_remote_version()
+    if not remote_version:
+        return None
+
+    # Also fetch recent commits for display
+    data = _fetch_github_json('commits?per_page=10&sha=main')
+    remote_commits = []
+    if data and isinstance(data, list):
+        remote_commits = [(c['sha'][:7], (c.get('commit', {}).get('message', '') or '').split('\n')[0])
+                          for c in data]
+
+    if local_version == remote_version:
+        return {'available': False, 'local': f'v{local_version}',
+                'remote': f'v{remote_version}',
                 'behind': 0, 'commits': [], 'method': 'pip'}
 
-    # Find how far behind — look for our hash in the remote commits
-    behind = 0
-    new_commits = []
-    for h, msg in remote_commits:
-        if h == local_hash:
-            break
-        behind += 1
-        new_commits.append((h, msg))
-
-    if behind == 0:
-        # Our hash wasn't in the last 10 commits — we're probably very behind
-        behind = len(remote_commits)
-        new_commits = remote_commits
-
-    return {'available': True, 'local': local_hash, 'remote': remote_hash,
-            'behind': behind, 'commits': new_commits, 'method': 'pip'}
+    return {'available': True, 'local': f'v{local_version}',
+            'remote': f'v{remote_version}',
+            'behind': len(remote_commits) or 1, 'commits': remote_commits,
+            'method': 'pip'}
 
 
 def pull_update():
