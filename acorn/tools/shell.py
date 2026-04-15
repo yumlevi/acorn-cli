@@ -184,14 +184,14 @@ async def execute(input: dict, cwd: str, process_manager=None, log_dir=None) -> 
     # If explicitly background or detected as server-like with a process manager
     if (background or is_server_like) and process_manager:
         bp = await process_manager.launch(command, cwd)
-        # Wait for early output or crash — longer wait to capture server startup
-        await asyncio.sleep(3.0)
+        # Brief wait for early crash detection
+        await asyncio.sleep(2.0)
         early_output = '\n'.join(bp.output) if bp.output else '(started, no output yet)'
         if not bp.running:
             result = {
                 'output': early_output,
                 'exitCode': bp.exit_code,
-                'note': f'Process exited immediately (exit {bp.exit_code})',
+                'note': f'Process exited (exit {bp.exit_code})',
             }
             if bp.log_path:
                 result['logFile'] = bp.log_path
@@ -200,7 +200,7 @@ async def execute(input: dict, cwd: str, process_manager=None, log_dir=None) -> 
             'output': early_output[:4000],
             'backgrounded': True,
             'processId': bp.id,
-            'note': f'Running in background as #{bp.id}. To read latest output: exec /bg {bp.id} or read_file {bp.log_path or "the log"}. To kill: exec /bg kill {bp.id}.',
+            'note': f'Running in background as #{bp.id}. Check output with exec /bg {bp.id} — call it multiple times with sleep in between to watch for startup completion. Log file: {bp.log_path or "N/A"}. Kill: exec /bg kill {bp.id}.',
         }
         if bp.log_path:
             result['logFile'] = bp.log_path
