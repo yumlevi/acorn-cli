@@ -135,27 +135,23 @@ def _handle_bg_command(args: str, pm) -> dict:
     return {'output': f'{header}\n{body}'}
 
 
-def _write_exec_log(log_dir, command, output, exit_code, duration_ms):
-    """Write exec output to .acorn/logs/exec-<timestamp>.log. Returns the log path."""
+def _open_exec_log(log_dir, command):
+    """Open a live log file for exec output. Returns (file_handle, log_path) or (None, None)."""
     if not log_dir:
-        return None
+        return None, None
     try:
         import time
         from pathlib import Path
         Path(log_dir).mkdir(parents=True, exist_ok=True)
         ts = time.strftime('%H%M%S')
-        # Derive a short slug from the command for readability
         slug = re.sub(r'[^a-zA-Z0-9]', '-', command.split()[0] if command.split() else 'cmd')[:20].strip('-')
         log_path = str(Path(log_dir) / f'exec-{ts}-{slug}.log')
-        with open(log_path, 'w', encoding='utf-8') as f:
-            f.write(f'# Command: {command}\n')
-            f.write(f'# Time: {time.strftime("%Y-%m-%d %H:%M:%S")}\n')
-            f.write(f'# Duration: {duration_ms}ms\n')
-            f.write(f'# Exit: {exit_code}\n\n')
-            f.write(output or '')
-        return log_path
+        f = open(log_path, 'w', encoding='utf-8', buffering=1)  # line-buffered
+        f.write(f'# Command: {command}\n')
+        f.write(f'# Time: {time.strftime("%Y-%m-%d %H:%M:%S")}\n\n')
+        return f, log_path
     except Exception:
-        return None
+        return None, None
 
 
 async def execute(input: dict, cwd: str, process_manager=None, log_dir=None) -> dict:
@@ -206,6 +202,8 @@ async def execute(input: dict, cwd: str, process_manager=None, log_dir=None) -> 
             result['logFile'] = bp.log_path
         return result
 
+    log_file, log_path = _open_exec_log(log_dir, command)
+
     try:
         import sys as _sys
         import time as _time
@@ -220,12 +218,61 @@ async def execute(input: dict, cwd: str, process_manager=None, log_dir=None) -> 
             stderr=asyncio.subprocess.STDOUT,
             **kwargs,
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        duration_ms = int((_time.time() - _start) * 1000)
-        raw_output = stdout.decode('utf-8', errors='replace')
 
-        # Write full output to log file
-        log_path = _write_exec_log(log_dir, command, raw_output, proc.returncode, duration_ms)
+        # Stream stdout line-by-line — inactivity timeout (resets on each line)
+        lines = []
+        try:
+            while True:
+                line = await asyncio.wait_for(proc.stdout.readline(), timeout=timeout)
+                if not line:
+                    break
+                decoded = line.decode('utf-8', errors='replace').rstrip('\n')
+                lines.append(decoded)
+                if log_file:
+                    log_file.write(decoded + '\n')
+                if on_output:
+                    try:
+                        on_output(decoded)
+                    except Exception:
+                        pass
+            await proc.wait()
+        except asyncio.TimeoutError:
+            # Inactivity timeout — no output for `timeout` seconds
+            if process_manager:
+                bp = await process_manager.launch(command, cwd)
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                if log_file:
+                    log_file.write(f'\n# Timed out after {timeout}s of inactivity — moved to background #{bp.id}\n')
+                    log_file.close()
+                    log_file = None
+                return {
+                    'output': '\n'.join(lines[-50:]) + f'\n\n[timed out after {timeout}s — moved to background as #{bp.id}]',
+                    'backgrounded': True,
+                    'processId': bp.id,
+                    'logFile': log_path,
+                    'note': f'To read latest output: exec /bg {bp.id}. To kill: exec /bg kill {bp.id}.',
+                }
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            if log_file:
+                log_file.write(f'\n# Timed out after {timeout}s\n')
+                log_file.close()
+                log_file = None
+            return {'error': f'Command timed out after {timeout}s', 'exitCode': -1, 'logFile': log_path}
+
+        duration_ms = int((_time.time() - _start) * 1000)
+        raw_output = '\n'.join(lines)
+
+        # Finalize log
+        if log_file:
+            log_file.write(f'\n# Exit: {proc.returncode}, Duration: {duration_ms}ms\n')
+            log_file.close()
+            log_file = None
 
         output = raw_output
         result = {'output': output, 'exitCode': proc.returncode}
@@ -239,24 +286,11 @@ async def execute(input: dict, cwd: str, process_manager=None, log_dir=None) -> 
         elif log_path:
             result['logFile'] = log_path
         return result
-    except asyncio.TimeoutError:
-        # On timeout, move to background instead of killing if we have a process manager
-        if process_manager:
-            bp = await process_manager.launch(command, cwd)
+    except Exception as e:
+        if log_file:
             try:
-                proc.kill()
+                log_file.write(f'\n# Error: {e}\n')
+                log_file.close()
             except Exception:
                 pass
-            return {
-                'output': f'Command timed out after {timeout}s — moved to background as #{bp.id}',
-                'backgrounded': True,
-                'processId': bp.id,
-                'note': f'To read latest output: exec /bg {bp.id}. To kill: exec /bg kill {bp.id}.',
-            }
-        try:
-            proc.kill()
-        except Exception:
-            pass
-        return {'error': f'Command timed out after {timeout}s', 'exitCode': -1}
-    except Exception as e:
         return {'error': str(e)}

@@ -298,6 +298,7 @@ class AcornApp(App):
         self.conn._on_disconnect = lambda: self._on_ws_disconnect()
         self.conn._on_reconnect = lambda: self._on_ws_reconnect()
         self.conn._on_tool_output = lambda name, inp, result, ms: self._on_tool_output(name, inp, result, ms)
+        self.conn._on_tool_line = lambda line: self._on_exec_line(line)
 
         # Wire WebSocket events to handler methods
         self.conn.on('chat:history', self.ws_handler.on_history)
@@ -836,6 +837,11 @@ class AcornApp(App):
         except NoMatches:
             pass
 
+    def _on_exec_line(self, line):
+        """Called for each line of exec output as it arrives — streams to output log."""
+        t = self.theme_data
+        self._log_output(Text(f'  {line}', style=t.get('muted', 'dim')))
+
     def _on_tool_output(self, tool_name, tool_input, result, duration_ms):
         """Called when a local tool execution completes — logs details to output panel."""
         t = self.theme_data
@@ -850,18 +856,12 @@ class AcornApp(App):
             cmd = (tool_input.get('command', '') or '')[:120]
             header.append(f'  $ {cmd}', style=t['fg'])
             self._log_output(header)
-            output = ''
-            if isinstance(result, dict):
-                output = result.get('output', result.get('error', ''))
-            if output:
-                for line in str(output).splitlines()[:50]:
-                    self._log_output(Text(f'  {line}', style=t.get('muted', 'dim')))
-                total_lines = str(output).count('\n') + 1
-                if total_lines > 50:
-                    self._log_output(Text(f'  ... ({total_lines - 50} more lines)', style=t.get('muted', 'dim')))
+            # Output lines already streamed via _on_exec_line — just show exit code
             exit_code = result.get('exitCode') if isinstance(result, dict) else None
             if exit_code is not None and exit_code != 0:
                 self._log_output(Text(f'  exit {exit_code}', style=t.get('error', 'red')))
+            if isinstance(result, dict) and result.get('error'):
+                self._log_output(Text(f'  {result["error"]}', style=t.get('error', 'red')))
         elif tool_name in ('read_file', 'write_file', 'edit_file'):
             path = tool_input.get('path', '')
             header.append(f'  {path}', style=t['fg'])

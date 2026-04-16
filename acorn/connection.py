@@ -45,7 +45,8 @@ class Connection:
         self._slog = None        # session logger
         self._on_disconnect = None  # callback
         self._on_reconnect = None   # callback
-        self._on_tool_output = None  # callback for output log
+        self._on_tool_output = None  # callback for output log (after completion)
+        self._on_tool_line = None   # callback for live output lines (during exec)
         self.connected = False
 
     async def authenticate(self, username: str, key: str) -> str:
@@ -260,7 +261,8 @@ class Connection:
         if self._slog:
             self._slog.tool_request(tool_name, tool_input)
         try:
-            result = await self.tool_executor.execute(tool_name, tool_input)
+            line_cb = self._on_tool_line if tool_name == 'exec' else None
+            result = await self.tool_executor.execute(tool_name, tool_input, on_output=line_cb)
             ms = int((_time.time() - start) * 1000)
             local = result is not None
             if self._slog:
