@@ -27,9 +27,18 @@ class ToolExecutor:
         self.cwd = cwd
         self.process_manager = process_manager
         self.delegation_mode = 'default'  # synced from ContextManager
+        self._current_proc = None  # track running subprocess for abort
         # Log dir for exec output files — .acorn/logs/ in the project
         import os
         self._log_dir = os.path.join(cwd, '.acorn', 'logs')
+
+    def abort_current(self):
+        """Kill any running subprocess (called on user stop)."""
+        if self._current_proc:
+            try:
+                self._current_proc.kill()
+            except Exception:
+                pass
 
     async def execute(self, name: str, input: dict) -> "dict | None":
         """Execute a tool locally. Returns None to signal server-side fallback."""
@@ -67,7 +76,7 @@ class ToolExecutor:
         elif name == 'edit_file':
             return file_ops.edit_file(input, self.cwd)
         elif name == 'exec':
-            return await shell.execute(input, self.cwd, process_manager=self.process_manager, log_dir=self._log_dir, on_output=getattr(self, '_on_output', None))
+            return await shell.execute(input, self.cwd, process_manager=self.process_manager, log_dir=self._log_dir, on_output=getattr(self, '_on_output', None), executor=self)
         elif name == 'glob':
             return search.glob_search(input, self.cwd)
         elif name == 'grep':

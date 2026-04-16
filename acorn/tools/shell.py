@@ -154,7 +154,7 @@ def _open_exec_log(log_dir, command):
         return None, None
 
 
-async def execute(input: dict, cwd: str, process_manager=None, log_dir=None, on_output=None) -> dict:
+async def execute(input: dict, cwd: str, process_manager=None, log_dir=None, on_output=None, executor=None) -> dict:
     command = input.get('command', '')
     timeout_ms = min(input.get('timeout', 120000), 600000)
     timeout = timeout_ms / 1000
@@ -218,6 +218,8 @@ async def execute(input: dict, cwd: str, process_manager=None, log_dir=None, on_
             stderr=asyncio.subprocess.STDOUT,
             **kwargs,
         )
+        if executor:
+            executor._current_proc = proc
 
         # Stream stdout line-by-line — inactivity timeout (resets on each line)
         lines = []
@@ -236,6 +238,8 @@ async def execute(input: dict, cwd: str, process_manager=None, log_dir=None, on_
                     except Exception:
                         pass
             await proc.wait()
+            if executor:
+                executor._current_proc = None
         except asyncio.TimeoutError:
             # Inactivity timeout — no output for `timeout` seconds
             if process_manager:

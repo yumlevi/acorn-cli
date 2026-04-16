@@ -896,6 +896,9 @@ class AcornApp(App):
         if self.generating:
             from acorn.protocol import stop_message
             asyncio.create_task(self.conn.send(stop_message(self.session_id)))
+            # Kill any running local subprocess immediately
+            if hasattr(self, 'executor'):
+                self.executor.abort_current()
             self.generating = False
             self._current_activity = ''
             if hasattr(self, 'chat_handler'):
