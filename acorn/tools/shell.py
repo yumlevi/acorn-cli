@@ -154,7 +154,7 @@ def _open_exec_log(log_dir, command):
         return None, None
 
 
-async def execute(input: dict, cwd: str, process_manager=None, log_dir=None) -> dict:
+async def execute(input: dict, cwd: str, process_manager=None, log_dir=None, on_output=None) -> dict:
     command = input.get('command', '')
     timeout_ms = min(input.get('timeout', 120000), 600000)
     timeout = timeout_ms / 1000
