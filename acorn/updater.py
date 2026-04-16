@@ -172,12 +172,14 @@ def _parse_version(v):
 def _fetch_remote_version():
     """Fetch the version string from pyproject.toml on GitHub main branch."""
     import urllib.request
-    import time as _time
     global _last_error
-    # Cache-bust with timestamp to avoid stale raw.githubusercontent.com responses
-    url = f'https://raw.githubusercontent.com/{GITHUB_REPO}/main/pyproject.toml?t={int(_time.time())}'
+    # Use GitHub Contents API (not raw.githubusercontent.com which caches aggressively)
+    url = f'{GITHUB_API}/contents/pyproject.toml?ref=main'
     try:
-        req = urllib.request.Request(url, headers={'Cache-Control': 'no-cache'})
+        req = urllib.request.Request(url, headers={
+            'Accept': 'application/vnd.github.v3.raw',
+            'Cache-Control': 'no-cache',
+        })
         with urllib.request.urlopen(req, timeout=10) as resp:
             content = resp.read().decode()
             m = re.search(r'version\s*=\s*"(.+?)"', content)
