@@ -87,12 +87,14 @@ class ChatHandler:
 
         # Smart context
         ctx = b.ctx_manager.get_context()
+        display_text = text  # clean user text for echo to observers
         content = (ctx + '\n\n' + text) if ctx else text
 
         if b.plan_mode:
             content = PLAN_PREFIX + content
 
         self.state.message_count += 1
+        self.state._display_text = display_text
         b.generating = True
         self.state.queued_message = None
 
@@ -101,4 +103,4 @@ class ChatHandler:
 
         b.update_footer()
         b.update_header()
-        await b.conn.send(chat_message(b.session_id, content, b.user, cwd=b.cwd))
+        await b.conn.send(chat_message(b.session_id, content, b.user, cwd=b.cwd, display_text=display_text))

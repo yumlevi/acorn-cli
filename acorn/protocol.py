@@ -3,7 +3,7 @@
 import json
 
 
-def chat_message(session_id: str, content: str, user_name: str, cwd: str = None) -> str:
+def chat_message(session_id: str, content: str, user_name: str, cwd: str = None, display_text: str = None) -> str:
     msg = {
         'type': 'chat',
         'content': content,
@@ -12,6 +12,8 @@ def chat_message(session_id: str, content: str, user_name: str, cwd: str = None)
     }
     if cwd:
         msg['cwd'] = cwd
+    if display_text:
+        msg['displayText'] = display_text
     return json.dumps(msg)
 
 
