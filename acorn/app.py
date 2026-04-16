@@ -106,8 +106,12 @@ class AcornApp(App):
         Binding('ctrl+b', 'show_bg', 'Bg Procs', show=True, priority=True),
         Binding('ctrl+o', 'toggle_output_log', 'Output', show=True, priority=True),
         Binding('escape', 'stop_generation', 'Stop', show=False),
-        Binding('pageup', 'scroll_up', 'Scroll Up', show=False, priority=True),
-        Binding('pagedown', 'scroll_down', 'Scroll Down', show=False, priority=True),
+        Binding('shift+up', 'scroll_up', 'Scroll Up', show=False, priority=True),
+        Binding('shift+down', 'scroll_down', 'Scroll Down', show=False, priority=True),
+        Binding('shift+left', 'focus_transcript', 'Transcript', show=False, priority=True),
+        Binding('shift+right', 'focus_output', 'Output', show=False, priority=True),
+        Binding('pageup', 'scroll_page_up', 'Page Up', show=False, priority=True),
+        Binding('pagedown', 'scroll_page_down', 'Page Down', show=False, priority=True),
     ]
 
     CSS = """
@@ -821,19 +825,58 @@ class AcornApp(App):
             self._log(Text(''))
         self._scroll_bottom()
 
-    def action_scroll_up(self):
+    def _get_scroll_target(self):
+        """Get the active scroll panel — output log if focused and visible, else transcript."""
         try:
-            transcript = self.query_one('#transcript', SelectableLog)
-            transcript.scroll_relative(y=-transcript.size.height, animate=False)
-        except (NoMatches, Exception):
+            output = self.query_one('#output-log', SelectableLog)
+            if not output.has_class('hidden') and self._scroll_focus == 'output':
+                return output
+        except NoMatches:
             pass
+        try:
+            return self.query_one('#transcript', SelectableLog)
+        except NoMatches:
+            return None
+
+    _scroll_focus = 'transcript'
+
+    def action_focus_transcript(self):
+        self._scroll_focus = 'transcript'
+        t = self.theme_data
+        self._log(Text('  ◂ transcript', style=t.get('muted', 'dim')))
+        self._scroll_bottom()
+
+    def action_focus_output(self):
+        try:
+            output = self.query_one('#output-log', SelectableLog)
+            if output.has_class('hidden'):
+                output.remove_class('hidden')
+        except NoMatches:
+            pass
+        self._scroll_focus = 'output'
+        t = self.theme_data
+        self._log(Text('  ▸ output log', style=t.get('muted', 'dim')))
+        self._scroll_bottom()
+
+    def action_scroll_up(self):
+        target = self._get_scroll_target()
+        if target:
+            target.scroll_relative(y=-5, animate=False)
 
     def action_scroll_down(self):
-        try:
-            transcript = self.query_one('#transcript', SelectableLog)
-            transcript.scroll_relative(y=transcript.size.height, animate=False)
-        except (NoMatches, Exception):
-            pass
+        target = self._get_scroll_target()
+        if target:
+            target.scroll_relative(y=5, animate=False)
+
+    def action_scroll_page_up(self):
+        target = self._get_scroll_target()
+        if target:
+            target.scroll_relative(y=-target.size.height, animate=False)
+
+    def action_scroll_page_down(self):
+        target = self._get_scroll_target()
+        if target:
+            target.scroll_relative(y=target.size.height, animate=False)
 
     def action_toggle_output_log(self):
         """Toggle the output/detail log panel (Ctrl+O)."""
