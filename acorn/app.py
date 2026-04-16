@@ -729,6 +729,7 @@ class AcornApp(App):
         import os, sys, platform, subprocess
         # Clean up before exec
         try:
+            self.process_manager.kill_all()
             self.slog.close()
             self.session_writer.close()
         except Exception:
@@ -913,6 +914,7 @@ class AcornApp(App):
             return
         # If idle → double tap to quit
         if now - self._last_ctrl_c < 1.0:
+            self.process_manager.kill_all()
             self.slog.session_end(self._get_message_count(), __import__('time').time() - self._session_start)
             self.slog.close()
             self.session_writer.close()
