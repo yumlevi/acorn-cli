@@ -207,12 +207,18 @@ async def execute(input: dict, cwd: str, process_manager=None, log_dir=None) -> 
         return result
 
     try:
+        import sys as _sys
         import time as _time
         _start = _time.time()
+        kwargs = {}
+        if _sys.platform != 'win32':
+            from acorn.background import _unix_preexec
+            kwargs['preexec_fn'] = _unix_preexec
         proc = await asyncio.create_subprocess_shell(
             command, cwd=cwd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            **kwargs,
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         duration_ms = int((_time.time() - _start) * 1000)

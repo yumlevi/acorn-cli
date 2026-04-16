@@ -3,8 +3,90 @@
 import asyncio
 import time
 import os
+import sys
+import signal
 from collections import deque
 from pathlib import Path
+
+
+def _setup_parent_death_cleanup():
+    """Ensure child processes die when acorn exits, even on crash/SIGKILL.
+    - Windows: Job Object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    - Unix: prctl PR_SET_PDEATHSIG (per-child, set in preexec_fn)
+    """
+    if sys.platform == 'win32':
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = ctypes.windll.kernel32
+
+            # Create a Job Object
+            job = kernel32.CreateJobObjectW(None, None)
+            if not job:
+                return None
+
+            # Set it to kill all children when the job handle closes (= process exits)
+            class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+                _fields_ = [
+                    ('PerProcessUserTimeLimit', ctypes.c_int64),
+                    ('PerJobUserTimeLimit', ctypes.c_int64),
+                    ('LimitFlags', wintypes.DWORD),
+                    ('MinimumWorkingSetSize', ctypes.c_size_t),
+                    ('MaximumWorkingSetSize', ctypes.c_size_t),
+                    ('ActiveProcessLimit', wintypes.DWORD),
+                    ('Affinity', ctypes.POINTER(ctypes.c_ulong)),
+                    ('PriorityClass', wintypes.DWORD),
+                    ('SchedulingClass', wintypes.DWORD),
+                ]
+
+            class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+                _fields_ = [
+                    ('BasicLimitInformation', JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                    ('IoInfo', ctypes.c_byte * 48),
+                    ('ProcessMemoryLimit', ctypes.c_size_t),
+                    ('JobMemoryLimit', ctypes.c_size_t),
+                    ('PeakProcessMemoryUsed', ctypes.c_size_t),
+                    ('PeakJobMemoryUsed', ctypes.c_size_t),
+                ]
+
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+            info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+
+            kernel32.SetInformationJobObject(
+                job, 9,  # JobObjectExtendedLimitInformation
+                ctypes.byref(info), ctypes.sizeof(info)
+            )
+            return job
+        except Exception:
+            return None
+    return None  # Unix uses preexec_fn per-child
+
+
+def _assign_to_job(job, proc):
+    """Assign a subprocess to a Windows Job Object."""
+    if not job or sys.platform != 'win32':
+        return
+    try:
+        import ctypes
+        handle = ctypes.windll.kernel32.OpenProcess(0x1F0FFF, False, proc.pid)  # PROCESS_ALL_ACCESS
+        if handle:
+            ctypes.windll.kernel32.AssignProcessToJobObject(job, handle)
+            ctypes.windll.kernel32.CloseHandle(handle)
+    except Exception:
+        pass
+
+
+def _unix_preexec():
+    """On Unix, set PDEATHSIG so child gets SIGTERM when parent dies."""
+    try:
+        import ctypes
+        libc = ctypes.CDLL('libc.so.6', use_errno=True)
+        PR_SET_PDEATHSIG = 1
+        libc.prctl(PR_SET_PDEATHSIG, signal.SIGTERM)
+    except Exception:
+        pass
 
 
 class BackgroundProcess:
@@ -52,14 +134,23 @@ class ProcessManager:
         self._log_dir = Path(log_dir) if log_dir else None
         if self._log_dir:
             self._log_dir.mkdir(parents=True, exist_ok=True)
+        # Windows: Job Object ensures children die with parent
+        self._job = _setup_parent_death_cleanup()
 
     async def launch(self, command: str, cwd: str) -> BackgroundProcess:
         """Launch a command in the background and start capturing output."""
+        kwargs = {}
+        if sys.platform != 'win32':
+            kwargs['preexec_fn'] = _unix_preexec
         proc = await asyncio.create_subprocess_shell(
             command, cwd=cwd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            **kwargs,
         )
+        # Windows: assign to job object so it dies with acorn
+        if self._job:
+            _assign_to_job(self._job, proc)
         pid = self._next_id
         self._next_id += 1
 
