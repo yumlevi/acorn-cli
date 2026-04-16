@@ -433,7 +433,8 @@ async def async_main(host, port, user, key, theme_name='dark', message=None, con
             app = AcornApp(conn, session_id, user, theme_name, cwd, is_continue=continue_session)
             app.plan_mode = plan_mode
             try:
-                await app.run_async(mouse=False)
+                import sys as _sys
+                await app.run_async(mouse=(_sys.platform != 'win32'))
             except (LookupError, Exception):
                 pass  # Textual shutdown timer cleanup race condition
     finally:
