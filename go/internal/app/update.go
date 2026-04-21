@@ -74,9 +74,8 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "enter":
-		// Enter sends, Shift+Enter inserts a newline. textarea handles Shift+Enter.
-		if msg.Alt || msg.Paste {
-			// Pass alt-enter / paste through as normal textarea input.
+		// Enter sends; Alt+Enter inserts a newline. textarea handles it.
+		if msg.Alt {
 			var cmd tea.Cmd
 			m.input, cmd = m.input.Update(msg)
 			return m, cmd
