@@ -10,6 +10,12 @@ import (
 	"github.com/yumlevi/acorn-cli/go/internal/proto"
 )
 
+// lightweight style helpers shared by modals (defined once so each modal
+// file doesn't re-declare accent/muted).
+func accentBold(t Theme) lipgloss.Style  { return lipgloss.NewStyle().Foreground(t.Accent).Bold(true) }
+func mutedStyleT(t Theme) lipgloss.Style { return lipgloss.NewStyle().Foreground(t.Muted).Faint(true) }
+func bodyStyleT(t Theme) lipgloss.Style  { return lipgloss.NewStyle().Foreground(t.Fg) }
+
 // question represents a single question in a QUESTIONS: block or an
 // ask_user tool call. Open-ended questions have Options == nil.
 type question struct {
@@ -44,7 +50,7 @@ func (m *Model) openQuestionModal(qs []question) {
 	}
 }
 
-func (m *Model) openStructuredQuestion(f proto.In) {
+func (m *Model) openStructuredQuestion(f proto.AskUser) {
 	labels := make([]string, 0, len(f.Options))
 	for _, o := range f.Options {
 		labels = append(labels, o.Label)
@@ -306,10 +312,10 @@ func (m *Model) finishQuestions() (tea.Model, tea.Cmd) {
 	if qm.source == "ask_user" {
 		// Structured ask_user: send WS answer.
 		if len(qm.answers) > 0 {
-			_ = m.client.Send(proto.Out{
-				Type:   "ask_user_answer",
-				QID:    qm.qid,
-				Answer: qm.answers[0],
+			_ = m.client.Send(map[string]any{
+				"type":   "ask_user_answer",
+				"qid":    qm.qid,
+				"answer": qm.answers[0],
 			})
 			m.pushChat("system", "Answered: "+qm.answers[0])
 		}

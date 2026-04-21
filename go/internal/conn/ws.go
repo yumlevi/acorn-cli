@@ -1,170 +1,396 @@
-// Package conn wraps the WebSocket client that talks to the SPORE server.
-// It owns the read/write loops, reconnection, and keepalive ping.
+// Package conn implements the acorn client-side of the acorn protocol.
+// Mirrors acorn/connection.py.
+//
+// Flow:
+//  1. HTTP POST {host}/api/acorn/auth with {username, key} → {token}.
+//  2. WebSocket connect to {ws_host}/ws?token={token}.
+//  3. Inbound messages fan out into Client.In.
+//  4. On disconnect, transparent reconnect with exponential backoff,
+//     re-authenticate, flush outbox of messages queued during the outage.
+//
+// Tool requests (server → client, name: "tool:request") are intercepted
+// here and handed to ToolExecutor. Regular frames go to Client.In.
 package conn
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
-
-	"github.com/yumlevi/acorn-cli/go/internal/proto"
 )
 
+// Raw inbound frame. app layer decodes by inspecting .Type and extracting
+// the fields it cares about. Keeping the whole raw JSON around lets the UI
+// decode structured payloads without losing shape.
+type Frame struct {
+	Type string          `json:"type"`
+	Raw  json.RawMessage `json:"-"`
+}
+
+// Authed response from /api/acorn/auth.
+type authResp struct {
+	Token string `json:"token"`
+	Error string `json:"error,omitempty"`
+}
+
+// Client owns the WebSocket + reconnect logic.
 type Client struct {
-	serverURL string
-	teamKey   string
-	user      string
+	host, user, key string
+	port            int
 
-	mu     sync.Mutex
-	ws     *websocket.Conn
-	closed bool
+	baseURL string
+	wsURL   string
 
-	// Inbound messages routed into this channel. The Bubble Tea model
-	// consumes it via a tea.Cmd that blocks on <-In.
-	In chan proto.In
+	mu        sync.Mutex
+	ws        *websocket.Conn
+	connected bool
+	token     string
+	outbox    [][]byte
+
+	// Subscribers.
+	In           chan Frame
+	ToolRequests chan Frame // tool:request frames route here; executor consumes
+
+	// Hooks.
+	OnConnected    func()
+	OnDisconnected func()
+	OnReconnecting func(attempt int)
+	Logger         func(level, tag, msg string)
+
+	done chan struct{} // closed on Close()
 }
 
-func New(serverURL, teamKey, user string) *Client {
+func New(host string, port int, user, key string) *Client {
+	base := host
+	if !strings.Contains(host, "://") {
+		base = fmt.Sprintf("http://%s:%d", host, port)
+	}
+	base = strings.TrimRight(base, "/")
+	wsBase := strings.Replace(base, "https://", "wss://", 1)
+	wsBase = strings.Replace(wsBase, "http://", "ws://", 1)
 	return &Client{
-		serverURL: serverURL,
-		teamKey:   teamKey,
-		user:      user,
-		In:        make(chan proto.In, 256),
+		host:         host,
+		port:         port,
+		user:         user,
+		key:          key,
+		baseURL:      base,
+		wsURL:        wsBase + "/ws",
+		In:           make(chan Frame, 256),
+		ToolRequests: make(chan Frame, 32),
+		done:         make(chan struct{}),
 	}
 }
 
-// Dial opens the WebSocket and authenticates via the acorn team key. Returns
-// the ready-to-use client, or an error if the handshake failed.
-//
-// The SPORE server expects the acorn key in the Sec-WebSocket-Protocol or
-// a custom header depending on the deployment; keeping this simple with a
-// custom header for now.
-func (c *Client) Dial(ctx context.Context) error {
-	u, err := url.Parse(c.serverURL)
+// Authenticate POSTs to /api/acorn/auth and stashes the token.
+func (c *Client) Authenticate(ctx context.Context) error {
+	payload := map[string]string{"username": c.user, "key": c.key}
+	data, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/api/acorn/auth", bytes.NewReader(data))
 	if err != nil {
-		return fmt.Errorf("bad server url: %w", err)
+		return err
 	}
-	header := http.Header{}
-	header.Set("X-Acorn-Team-Key", c.teamKey)
-	header.Set("X-Acorn-User", c.user)
+	req.Header.Set("Content-Type", "application/json")
 
-	dialer := websocket.Dialer{
-		HandshakeTimeout: 10 * time.Second,
-	}
-	ws, resp, err := dialer.DialContext(ctx, u.String(), header)
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
 	if err != nil {
-		if resp != nil {
-			return fmt.Errorf("ws dial %s failed: %w (status %d)", u.String(), err, resp.StatusCode)
+		return fmt.Errorf("auth post failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	var ar authResp
+	_ = json.Unmarshal(body, &ar)
+	if resp.StatusCode != 200 {
+		if ar.Error != "" {
+			return fmt.Errorf("auth %d: %s", resp.StatusCode, ar.Error)
 		}
-		return fmt.Errorf("ws dial %s failed: %w", u.String(), err)
+		return fmt.Errorf("auth %d: %s", resp.StatusCode, truncate(string(body), 300))
 	}
+	if ar.Token == "" {
+		return errors.New("auth returned no token")
+	}
+	c.mu.Lock()
+	c.token = ar.Token
+	c.mu.Unlock()
+	return nil
+}
 
+// Connect opens the WebSocket using the previously-authenticated token.
+// Authenticate must have been called first.
+func (c *Client) Connect(ctx context.Context) error {
+	c.mu.Lock()
+	tok := c.token
+	c.mu.Unlock()
+	if tok == "" {
+		return errors.New("connect: no token — authenticate first")
+	}
+	u, err := url.Parse(c.wsURL)
+	if err != nil {
+		return fmt.Errorf("bad ws url: %w", err)
+	}
+	q := u.Query()
+	q.Set("token", tok)
+	u.RawQuery = q.Encode()
+
+	d := websocket.Dialer{
+		HandshakeTimeout: 10 * time.Second,
+		ReadBufferSize:   1 << 16,
+		WriteBufferSize:  1 << 16,
+	}
+	ws, resp, err := d.DialContext(ctx, u.String(), nil)
+	if err != nil {
+		status := 0
+		if resp != nil {
+			status = resp.StatusCode
+		}
+		return fmt.Errorf("ws dial %s: %w (status %d)", u.String(), err, status)
+	}
 	c.mu.Lock()
 	c.ws = ws
-	c.closed = false
+	c.connected = true
 	c.mu.Unlock()
 
 	go c.readLoop()
 	go c.pingLoop()
+
+	if c.OnConnected != nil {
+		c.OnConnected()
+	}
 	return nil
 }
 
-func (c *Client) readLoop() {
-	defer func() {
-		c.mu.Lock()
-		c.closed = true
-		if c.ws != nil {
-			_ = c.ws.Close()
-		}
-		c.mu.Unlock()
-		close(c.In)
-	}()
-	for {
-		c.mu.Lock()
-		ws := c.ws
-		closed := c.closed
-		c.mu.Unlock()
-		if ws == nil || closed {
-			return
-		}
-		_, data, err := ws.ReadMessage()
-		if err != nil {
-			if !errors.Is(err, websocket.ErrCloseSent) {
-				// Push an error frame so the UI can surface the disconnect.
-				select {
-				case c.In <- proto.In{Type: "conn:error", Error: err.Error()}:
-				default:
-				}
-			}
-			return
-		}
-		var m proto.In
-		if err := json.Unmarshal(data, &m); err != nil {
-			continue
-		}
-		m.Raw = json.RawMessage(data)
-		select {
-		case c.In <- m:
-		default:
-			// Drop frames if the UI is backed up. Chat deltas are the only
-			// high-frequency path and dropping a few deltas is fine.
-		}
-	}
-}
-
-func (c *Client) pingLoop() {
-	t := time.NewTicker(25 * time.Second)
-	defer t.Stop()
-	for range t.C {
-		c.mu.Lock()
-		ws := c.ws
-		closed := c.closed
-		c.mu.Unlock()
-		if ws == nil || closed {
-			return
-		}
-		_ = c.sendRaw(proto.Out{Type: "ping"})
-	}
-}
-
-// Send marshals and writes a message.
-func (c *Client) Send(m proto.Out) error {
-	return c.sendRaw(m)
-}
-
-func (c *Client) sendRaw(m proto.Out) error {
-	c.mu.Lock()
-	ws := c.ws
-	closed := c.closed
-	c.mu.Unlock()
-	if ws == nil || closed {
-		return errors.New("websocket closed")
-	}
-	data, err := json.Marshal(m)
+// Send marshals and writes a message. If disconnected, queues it for the
+// next reconnect — that's parity with acorn's _outbox.
+func (c *Client) Send(msg map[string]any) error {
+	data, err := json.Marshal(msg)
 	if err != nil {
 		return err
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return ws.WriteMessage(websocket.TextMessage, data)
+	return c.sendRaw(data)
 }
 
-// Close shuts down the connection.
-func (c *Client) Close() {
+func (c *Client) sendRaw(data []byte) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.closed = true
+	ws := c.ws
+	connected := c.connected
+	c.mu.Unlock()
+	if ws != nil && connected {
+		if err := ws.WriteMessage(websocket.TextMessage, data); err == nil {
+			return nil
+		}
+	}
+	// Queue for reconnect flush.
+	c.mu.Lock()
+	c.outbox = append(c.outbox, data)
+	c.mu.Unlock()
+	c.log("debug", "ws", fmt.Sprintf("queued message (%d in outbox)", len(c.outbox)))
+	// Kick reconnect if we think we're connected but the write failed.
+	go c.reconnect()
+	return nil
+}
+
+// Close shuts everything down.
+func (c *Client) Close() {
+	select {
+	case <-c.done:
+		return
+	default:
+	}
+	close(c.done)
+	c.mu.Lock()
+	c.connected = false
 	if c.ws != nil {
 		_ = c.ws.WriteMessage(websocket.CloseMessage,
 			websocket.FormatCloseMessage(websocket.CloseNormalClosure, "bye"))
 		_ = c.ws.Close()
 		c.ws = nil
 	}
+	c.mu.Unlock()
+}
+
+func (c *Client) readLoop() {
+	for {
+		c.mu.Lock()
+		ws := c.ws
+		connected := c.connected
+		c.mu.Unlock()
+		if ws == nil || !connected {
+			return
+		}
+		_, data, err := ws.ReadMessage()
+		if err != nil {
+			c.log("warn", "ws", fmt.Sprintf("connection closed: %v", err))
+			c.mu.Lock()
+			c.connected = false
+			c.mu.Unlock()
+			if c.OnDisconnected != nil {
+				c.OnDisconnected()
+			}
+			// Push an error frame so the UI sees the disconnect.
+			select {
+			case c.In <- Frame{Type: "conn:error", Raw: mustJSON(map[string]any{"type": "conn:error", "error": err.Error()})}:
+			default:
+			}
+			go c.reconnect()
+			return
+		}
+		var peek struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(data, &peek); err != nil {
+			continue
+		}
+		f := Frame{Type: peek.Type, Raw: json.RawMessage(data)}
+		if peek.Type == "tool:request" {
+			select {
+			case c.ToolRequests <- f:
+			default:
+				c.log("warn", "ws", "tool:request dropped — ToolRequests channel full")
+			}
+			continue
+		}
+		select {
+		case c.In <- f:
+		default:
+			// Drop frames if UI is backed up. Only high-frequency path is
+			// chat:delta; dropping a few is survivable.
+		}
+	}
+}
+
+func (c *Client) pingLoop() {
+	t := time.NewTicker(15 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-c.done:
+			return
+		case <-t.C:
+			c.mu.Lock()
+			ws := c.ws
+			connected := c.connected
+			c.mu.Unlock()
+			if ws == nil || !connected {
+				return
+			}
+			if err := ws.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)); err != nil {
+				c.log("warn", "ws", fmt.Sprintf("heartbeat failed: %v", err))
+				c.mu.Lock()
+				c.connected = false
+				c.mu.Unlock()
+				go c.reconnect()
+				return
+			}
+		}
+	}
+}
+
+// reconnect with exponential backoff, re-auth, and outbox flush. Matches
+// acorn/connection.py:_reconnect.
+func (c *Client) reconnect() {
+	c.mu.Lock()
+	if c.connected {
+		c.mu.Unlock()
+		return
+	}
+	// Lock a "reconnecting" flag by reusing the done channel pattern.
+	if ws := c.ws; ws != nil {
+		_ = ws.Close()
+		c.ws = nil
+	}
+	c.mu.Unlock()
+
+	backoff := []time.Duration{
+		1 * time.Second,
+		2 * time.Second,
+		4 * time.Second,
+		8 * time.Second,
+		15 * time.Second,
+		30 * time.Second,
+		30 * time.Second,
+		30 * time.Second,
+	}
+	for attempt, d := range backoff {
+		select {
+		case <-c.done:
+			return
+		default:
+		}
+		if c.OnReconnecting != nil {
+			c.OnReconnecting(attempt + 1)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+		if err := c.Authenticate(ctx); err != nil {
+			cancel()
+			c.log("debug", "ws", fmt.Sprintf("reconnect auth #%d failed: %v", attempt+1, err))
+			time.Sleep(d)
+			continue
+		}
+		cancel()
+		ctx2, cancel2 := context.WithTimeout(context.Background(), 12*time.Second)
+		err := c.Connect(ctx2)
+		cancel2()
+		if err != nil {
+			c.log("debug", "ws", fmt.Sprintf("reconnect dial #%d failed: %v", attempt+1, err))
+			time.Sleep(d)
+			continue
+		}
+		c.log("info", "ws", fmt.Sprintf("reconnected (attempt %d)", attempt+1))
+		c.flushOutbox()
+		return
+	}
+	c.log("error", "ws", "all reconnect attempts failed")
+}
+
+func (c *Client) flushOutbox() {
+	c.mu.Lock()
+	ob := c.outbox
+	c.outbox = nil
+	ws := c.ws
+	connected := c.connected
+	c.mu.Unlock()
+	if ws == nil || !connected {
+		c.mu.Lock()
+		c.outbox = append(ob, c.outbox...)
+		c.mu.Unlock()
+		return
+	}
+	for i, msg := range ob {
+		if err := ws.WriteMessage(websocket.TextMessage, msg); err != nil {
+			// Push unsent back.
+			c.mu.Lock()
+			c.outbox = append(ob[i:], c.outbox...)
+			c.mu.Unlock()
+			return
+		}
+	}
+}
+
+// log routes through the Logger hook if set, else to stderr for high levels.
+func (c *Client) log(level, tag, msg string) {
+	if c.Logger != nil {
+		c.Logger(level, tag, msg)
+	}
+}
+
+func truncate(s string, n int) string {
+	if len(s) > n {
+		return s[:n] + "…"
+	}
+	return s
+}
+
+func mustJSON(v any) json.RawMessage {
+	b, _ := json.Marshal(v)
+	return b
 }

@@ -7,27 +7,16 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// Module-level styles referenced by the modal files. They're built from
+// themeDark at init time — themes that differ from dark still work because
+// the modals overlay the entire screen, so only the accent/muted contrast
+// matters in practice.
 var (
-	userStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#5b8af5"))
-	botStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#c8cdd8"))
-	sysStyle  = lipgloss.NewStyle().Faint(true).Italic(true).Foreground(lipgloss.Color("#7a8595"))
-	mutedStyle = lipgloss.NewStyle().Faint(true)
-	accentStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#8b6cf7"))
+	borderStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#1e2133"))
 
-	borderStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#1e2133"))
-
-	headerStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#e2e6f0")).
-			Background(lipgloss.Color("#0e1017")).
-			Padding(0, 1)
-
-	footerStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#7a8595")).
-			Background(lipgloss.Color("#0e1017")).
-			Padding(0, 1)
+	accentStyle = lipgloss.NewStyle().Foreground(themeDark.Accent).Bold(true)
+	mutedStyle  = lipgloss.NewStyle().Foreground(themeDark.Muted).Faint(true)
+	botStyle    = lipgloss.NewStyle().Foreground(themeDark.BotPanel)
 )
 
 func (m *Model) View() string {
@@ -36,41 +25,51 @@ func (m *Model) View() string {
 	}
 	header := m.renderHeader()
 	body := m.viewport.View()
-	input := borderStyle.Width(m.width - 2).Render(m.input.View())
+
+	inputStyle := borderStyle.Copy().
+		BorderForeground(m.theme.Separator).
+		Width(m.width - 2)
+	input := inputStyle.Render(m.input.View())
 	footer := m.renderFooter()
 
-	main := lipgloss.JoinVertical(lipgloss.Left,
-		header,
-		body,
-		input,
-		footer,
-	)
+	main := lipgloss.JoinVertical(lipgloss.Left, header, body, input, footer)
 
 	switch m.modal {
 	case modalQuestion:
-		return overlay(main, m.question.view(m.width, m.height))
+		return m.question.view(m.width, m.height)
 	case modalPlan:
-		return overlay(main, m.planApproval.view(m.width, m.height))
+		return m.planApproval.view(m.width, m.height)
+	case modalPermission:
+		return m.permission.view(m.width, m.height, m.theme)
 	}
 	return main
 }
 
 func (m *Model) renderHeader() string {
 	mode := "EXEC"
+	modeBg := m.theme.ModeBarExecBg
 	if m.planMode {
 		mode = "PLAN"
+		modeBg = m.theme.ModeBarPlanBg
 	}
 	connIcon := "●"
 	if !m.connected {
 		connIcon = "○"
 	}
-	left := fmt.Sprintf("%s acorn · %s · %s", connIcon, m.cfg.User, m.sess)
-	right := fmt.Sprintf("[%s]", mode)
-	pad := m.width - lipgloss.Width(left) - lipgloss.Width(right) - 2
-	if pad < 1 {
-		pad = 1
+	left := fmt.Sprintf("%s acorn · %s · %s", connIcon, m.cfg.Connection.User, short(m.sess))
+	right := fmt.Sprintf(" [%s] ", mode)
+
+	leftStyle := lipgloss.NewStyle().Bold(true).
+		Foreground(m.theme.Fg).Background(m.theme.BgPanel).Padding(0, 1)
+	rightStyle := lipgloss.NewStyle().Bold(true).
+		Foreground(lipgloss.Color("#ffffff")).Background(modeBg).Padding(0, 1)
+
+	pad := m.width - lipgloss.Width(leftStyle.Render(left)) - lipgloss.Width(rightStyle.Render(right))
+	if pad < 0 {
+		pad = 0
 	}
-	return headerStyle.Width(m.width).Render(left + strings.Repeat(" ", pad) + right)
+	fill := lipgloss.NewStyle().Background(m.theme.BgPanel).Render(strings.Repeat(" ", pad))
+	return leftStyle.Render(left) + fill + rightStyle.Render(right)
 }
 
 func (m *Model) renderFooter() string {
@@ -78,65 +77,65 @@ func (m *Model) renderFooter() string {
 	if status == "" {
 		status = "enter: send · shift+tab: mode · pgup/pgdn: scroll · /help"
 	}
-	return footerStyle.Width(m.width).Render(status)
+	return lipgloss.NewStyle().
+		Foreground(m.theme.Muted).
+		Background(m.theme.BgPanel).
+		Padding(0, 1).
+		Width(m.width).
+		Render(status)
 }
 
-// layout recomputes viewport + input dimensions for the current window size.
 func (m *Model) layout() {
-	// Header + input + footer = ~3 + 5 + 1 lines-ish. Give the rest to viewport.
 	m.input.SetWidth(m.width - 2)
-	inputH := m.input.Height() + 2 // border top/bottom
+	inputH := m.input.Height() + 2
 	m.viewport.Width = m.width
-	m.viewport.Height = m.height - 1 /*header*/ - inputH - 1 /*footer*/
+	m.viewport.Height = m.height - 1 - inputH - 1
 	if m.viewport.Height < 3 {
 		m.viewport.Height = 3
 	}
 	m.rerenderViewport()
 }
 
-// rerenderViewport formats all messages into a single string and pushes it
-// into the viewport. Also scrolls to bottom.
 func (m *Model) rerenderViewport() {
 	var b strings.Builder
 	for _, msg := range m.messages {
-		b.WriteString(renderMessage(msg, m.width))
+		b.WriteString(renderMessage(msg, m.width, m.theme))
 		b.WriteString("\n")
 	}
 	m.viewport.SetContent(b.String())
 	m.viewport.GotoBottom()
 }
 
-func renderMessage(c chatMsg, width int) string {
+func renderMessage(c chatMsg, width int, t Theme) string {
 	if c.Role == "system" {
-		return sysStyle.Render("  " + c.Text)
+		return lipgloss.NewStyle().Foreground(t.System).Italic(true).Render("  " + c.Text)
 	}
-	var head, body lipgloss.Style
+	var headColor, bodyColor lipgloss.Color
+	var label string
 	switch c.Role {
 	case "user":
-		head = userStyle
-		body = userStyle.Copy().Bold(false)
+		headColor, bodyColor = t.UserPanel, t.Fg
+		label = strings.ToUpper(c.Role)
 	case "assistant":
-		head = accentStyle
-		body = botStyle
+		headColor, bodyColor = t.Accent2, t.BotPanel
+		label = strings.ToUpper(c.Role)
 	default:
-		head = mutedStyle
-		body = mutedStyle
+		headColor, bodyColor = t.Muted, t.Muted
+		label = strings.ToUpper(c.Role)
 	}
-	label := strings.ToUpper(c.Role)
+	head := lipgloss.NewStyle().Bold(true).Foreground(headColor).Render(label + ":")
+	body := lipgloss.NewStyle().Foreground(bodyColor).Width(width - 2).Render(c.Text)
 	trail := ""
 	if c.Streaming {
-		trail = accentStyle.Render(" ▌")
+		trail = lipgloss.NewStyle().Foreground(t.Accent).Render(" ▌")
 	}
-	return head.Render(label+":") + "\n" + body.Width(width-2).Render(c.Text) + trail
+	return head + "\n" + body + trail
 }
 
-// overlay centres a modal string atop the main view. Bubble Tea doesn't have
-// a native z-layer, so we just replace the tail of the frame with the modal.
-// Good-enough UX for now; the real thing would use a ModalScreen-style layer
-// once Bubble Tea gains one (or via a custom Program with multiple viewports).
-func overlay(main, modal string) string {
-	// Simplest: render the modal in place of the main frame when open.
-	// A proper overlay would require knowing the main dimensions and
-	// compositing — skip for MVP.
-	return modal
+// short tail-truncates a session id for the header.
+func short(s string) string {
+	if len(s) <= 40 {
+		return s
+	}
+	return "…" + s[len(s)-38:]
 }

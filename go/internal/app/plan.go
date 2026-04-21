@@ -9,8 +9,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-
-	"github.com/yumlevi/acorn-cli/go/internal/proto"
 )
 
 type planModal struct {
@@ -145,7 +143,7 @@ func (m *Model) planExecute(text string) (tea.Model, tea.Cmd) {
 	m.pushChat("system", "▶ Executing plan…")
 	m.generating = true
 	m.status = "waiting…"
-	return m, m.sendChatMessage("[PLAN EXECUTE] Execute the plan you just drafted.")
+	return m, m.sendChatMessage(PlanExecuteMsg)
 }
 
 func (m *Model) planReviseWithFeedback(fb string) (tea.Model, tea.Cmd) {
@@ -161,17 +159,15 @@ func (m *Model) planReviseWithFeedback(fb string) (tea.Model, tea.Cmd) {
 	return m, m.sendChatMessage("[PLAN FEEDBACK: Revise the plan. Stay in plan mode.]\n\n" + fb)
 }
 
-// sendChatMessage is a helper used by plan + ask_user flows — same as
-// sendChat but lets the caller pass arbitrary content without typing in the
-// input widget.
+// sendChatMessage lets plan+ask_user flows send arbitrary content.
 func (m *Model) sendChatMessage(content string) tea.Cmd {
 	return func() tea.Msg {
-		err := m.client.Send(proto.Out{
-			Type:      "chat",
-			SessionID: m.sess,
-			Content:   content,
-			UserName:  m.cfg.User,
-			CWD:       m.cwd,
+		err := m.client.Send(map[string]any{
+			"type":      "chat",
+			"sessionId": m.sess,
+			"content":   content,
+			"userName":  m.cfg.Connection.User,
+			"cwd":       m.cwd,
 		})
 		if err != nil {
 			return connErrorMsg{err: err.Error()}

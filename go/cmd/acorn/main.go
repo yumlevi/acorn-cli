@@ -1,11 +1,13 @@
-// Command acorn is the Go port of acorn-cli. See ../../README.md.
+// Command acorn — Go port of acorn-cli. See /go/README.md.
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -13,49 +15,89 @@ import (
 	"github.com/yumlevi/acorn-cli/go/internal/config"
 )
 
+var version = "0.1.0"
+
 func main() {
 	var (
-		serverURL = flag.String("server", "", "SPORE server URL (overrides config)")
+		host      = flag.String("host", "", "SPORE server host (overrides config)")
+		port      = flag.Int("port", 0, "SPORE web port (overrides config)")
+		user      = flag.String("user", "", "username (overrides config)")
 		sessionID = flag.String("session", "", "resume a specific session id")
+		cont      = flag.Bool("continue", false, "resume the most recent session in this cwd")
+		planMode  = flag.Bool("plan", false, "start in plan mode")
 		showVer   = flag.Bool("version", false, "print version and exit")
 	)
+	flag.BoolVar(cont, "c", false, "short for --continue")
 	flag.Parse()
 
 	if *showVer {
-		fmt.Println("acorn (go port) 0.1.0")
+		fmt.Printf("acorn %s (go port)\n", version)
 		return
 	}
 
 	cwd, err := os.Getwd()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "cannot read cwd:", err)
-		os.Exit(1)
+		fail("cannot read cwd:", err)
 	}
 
 	cfg, err := config.Load(cwd)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "config load failed:", err)
-		os.Exit(1)
-	}
-	if *serverURL != "" {
-		cfg.ServerURL = *serverURL
-	}
-	if cfg.ServerURL == "" {
-		fmt.Fprintln(os.Stderr, "no server url — set `server = \"wss://your-spore/ws\"` in ~/.acorn/config.toml or pass --server")
-		os.Exit(1)
-	}
-	if cfg.TeamKey == "" {
-		fmt.Fprintln(os.Stderr, "no team key — set `team_key = \"...\"` in ~/.acorn/config.toml")
-		os.Exit(1)
+		if err == config.ErrNoGlobalConfig {
+			fail("no global config at ~/.acorn/config.toml — run the Python acorn once to create it, or write it manually (see go/README.md for the shape).", nil)
+		}
+		fail("config load failed:", err)
 	}
 
-	// Ensure .acorn/plans/ exists in cwd so plan-save doesn't fail later.
-	_ = os.MkdirAll(filepath.Join(cwd, ".acorn", "plans"), 0o755)
+	if *host != "" {
+		cfg.Connection.Host = *host
+	}
+	if *port != 0 {
+		cfg.Connection.Port = *port
+	}
+	if *user != "" {
+		cfg.Connection.User = *user
+	}
+	if cfg.Connection.User == "" {
+		fail("no user — set `user` in ~/.acorn/config.toml [connection] or pass --user", nil)
+	}
+	if cfg.Connection.Key == "" {
+		fail("no acorn team key — set `key` in ~/.acorn/config.toml [connection]", nil)
+	}
 
-	m := app.New(cfg, cwd, *sessionID)
+	// Create .acorn/{plans,logs}/ in cwd so tools have somewhere to write.
+	_ = config.EnsureLocalDir(cwd)
+	_ = os.MkdirAll(filepath.Join(cwd, ".acorn", "logs"), 0o755)
+
+	// Session resolution.
+	sess := *sessionID
+	if sess == "" && *cont {
+		if last, err := config.LoadLastSession(cfg.GlobalDir); err == nil && last.SessionID != "" {
+			sess = last.SessionID
+		}
+	}
+	if sess == "" {
+		sess = app.ComputeSessionID(cfg.Connection.User, cwd)
+	}
+
+	m := app.New(cfg, cwd, sess, *planMode)
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	m.SetProgram(p)
 	if _, err := p.Run(); err != nil {
-		fmt.Fprintln(os.Stderr, "fatal:", err)
-		os.Exit(1)
+		fail("fatal:", err)
 	}
+	// Save the session for next `-c`.
+	_ = config.SaveLastSession(cfg.GlobalDir, sess, cwd)
+
+	// Unused tree imports silencer (keep go vet happy if new imports drift).
+	_ = context.Background
+	_ = strings.TrimSpace
+}
+
+func fail(prefix string, err error) {
+	if err != nil {
+		fmt.Fprintln(os.Stderr, prefix, err)
+	} else {
+		fmt.Fprintln(os.Stderr, prefix)
+	}
+	os.Exit(1)
 }

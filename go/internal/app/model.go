@@ -1,76 +1,90 @@
-// Package app is the Bubble Tea model for the acorn CLI.
 package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/google/uuid"
 
 	"github.com/yumlevi/acorn-cli/go/internal/config"
 	"github.com/yumlevi/acorn-cli/go/internal/conn"
 	"github.com/yumlevi/acorn-cli/go/internal/proto"
+	"github.com/yumlevi/acorn-cli/go/internal/tools"
 )
 
-// Modal kinds — at most one visible at a time.
 type modalKind int
 
 const (
 	modalNone modalKind = iota
 	modalQuestion
 	modalPlan
+	modalPermission
 )
 
-// Chat message log entry.
+// chatMsg is one panel in the chat log.
 type chatMsg struct {
 	Role      string // "user" | "assistant" | "system" | "tool"
 	Text      string
 	Timestamp time.Time
-	// Set when an assistant message is still receiving deltas. View renders
-	// a trailing cursor while true.
 	Streaming bool
 }
 
+// Model is the Bubble Tea Model.
 type Model struct {
 	cfg  *config.Config
 	cwd  string
 	sess string
 
-	client    *conn.Client
+	client  *conn.Client
+	exec    *tools.Executor
+	perms   *TUIPerms
+
 	connected bool
 	connErr   string
 
-	// Chat state.
-	messages       []chatMsg
-	currentStream  *chatMsg // pointer into messages for the active assistant turn
-	viewport       viewport.Model
-	input          textarea.Model
-	width, height  int
+	messages      []chatMsg
+	currentStream *chatMsg
+	viewport      viewport.Model
+	input         textarea.Model
+	width, height int
 
-	// Mode + status
-	planMode   bool
-	generating bool
-	status     string // bottom-bar activity string
+	planMode     bool
+	contextSent  bool // gather_context only on first message
+	generating   bool
+	status       string
+	theme        Theme
 
 	// Modals
 	modal        modalKind
 	question     *questionModal
 	planApproval *planModal
+	permission   *permissionModal
+
+	// Plan text stashed by ws_events while processing QUESTIONS: in plan mode
+	// — same composition fix as the Python 277fc8c commit.
+	stashedPlan string
+
+	// sendProgramMsg is wired by main.go after tea.NewProgram so off-thread
+	// goroutines (the permissions blocking prompt) can poke the UI.
+	sendProgramMsg func(msg tea.Msg)
 }
 
-// New constructs the initial model. Connection happens via Init() as a tea.Cmd.
-func New(cfg *config.Config, cwd, sessionID string) *Model {
-	if sessionID == "" {
-		sessionID = fmt.Sprintf("cli:%s@%s-%s", cfg.User, dirTag(cwd), shortID())
-	}
+// SetProgram stores the reference so off-thread code can deliver messages.
+// main.go calls this after tea.NewProgram returns.
+func (m *Model) SetProgram(p *tea.Program) {
+	m.sendProgramMsg = func(msg tea.Msg) { p.Send(msg) }
+}
 
+// New constructs the initial model.
+func New(cfg *config.Config, cwd, sess string, planMode bool) *Model {
 	ta := textarea.New()
-	ta.Placeholder = "type a message, /help for commands, Shift+Tab toggles plan mode"
+	ta.Placeholder = "type a message · /help for commands · Shift+Tab toggles plan mode"
 	ta.SetHeight(3)
 	ta.ShowLineNumbers = false
 	ta.Focus()
@@ -78,41 +92,56 @@ func New(cfg *config.Config, cwd, sessionID string) *Model {
 	vp := viewport.New(0, 0)
 	vp.SetContent("")
 
-	return &Model{
+	m := &Model{
 		cfg:      cfg,
 		cwd:      cwd,
-		sess:     sessionID,
+		sess:     sess,
 		input:    ta,
 		viewport: vp,
-		planMode: cfg.PlanMode,
+		planMode: planMode,
 		status:   "connecting…",
+		theme:    themeForName(cfg.Display.Theme),
 	}
+	m.perms = newTUIPerms(m)
+	m.exec = tools.New(m.perms, cwd, filepath.Join(cwd, ".acorn", "logs"))
+	m.exec.Hooks.OnExecLine = func(line string) {
+		// Keep a low-noise preview in the status bar.
+		if len(line) > 120 {
+			line = line[:120] + "…"
+		}
+		m.status = "⚙ " + line
+	}
+	return m
 }
 
 func (m *Model) Init() tea.Cmd {
-	m.client = conn.New(m.cfg.ServerURL, m.cfg.TeamKey, m.cfg.User)
+	m.client = conn.New(m.cfg.Connection.Host, m.cfg.Connection.Port, m.cfg.Connection.User, m.cfg.Connection.Key)
+	m.client.OnConnected = func() { /* handled via connOpenMsg below */ }
+	m.client.OnDisconnected = func() { /* likewise */ }
 	return tea.Batch(
-		dialCmd(m.client),
+		m.dialCmd(),
 		m.recvCmd(),
+		m.toolCmd(),
 		textarea.Blink,
 	)
 }
 
-// dialCmd runs the WS dial off the main tea goroutine.
-func dialCmd(c *conn.Client) tea.Cmd {
+// dialCmd runs authenticate + connect off the main tea goroutine.
+func (m *Model) dialCmd() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 		defer cancel()
-		if err := c.Dial(ctx); err != nil {
+		if err := m.client.Authenticate(ctx); err != nil {
+			return connErrorMsg{err: err.Error()}
+		}
+		if err := m.client.Connect(ctx); err != nil {
 			return connErrorMsg{err: err.Error()}
 		}
 		return connOpenMsg{}
 	}
 }
 
-// recvCmd reads a single inbound frame and returns it as a tea.Msg. The
-// update loop re-arms recvCmd after each receive so the channel keeps
-// pumping frames into the UI.
+// recvCmd reads a single WS frame.
 func (m *Model) recvCmd() tea.Cmd {
 	return func() tea.Msg {
 		f, ok := <-m.client.In
@@ -123,43 +152,46 @@ func (m *Model) recvCmd() tea.Cmd {
 	}
 }
 
+// toolCmd reads a single tool:request frame and executes it.
+func (m *Model) toolCmd() tea.Cmd {
+	return func() tea.Msg {
+		f, ok := <-m.client.ToolRequests
+		if !ok {
+			return nil
+		}
+		var req proto.ToolRequest
+		if err := json.Unmarshal(f.Raw, &req); err != nil {
+			return nil
+		}
+		// Ack immediately.
+		_ = m.client.Send(map[string]any{"type": "tool:ack", "id": req.ID})
+
+		result, claimed := m.exec.Execute(req.Name, req.Input)
+		if claimed {
+			_ = m.client.Send(map[string]any{
+				"type":   "tool:result",
+				"id":     req.ID,
+				"result": result,
+			})
+		}
+		return toolHandledMsg{name: req.Name}
+	}
+}
+
 // ── internal message types ────────────────────────────────────────────
 type connOpenMsg struct{}
 type connErrorMsg struct{ err string }
 type connClosedMsg struct{}
-type wsFrameMsg struct{ frame proto.In }
+type wsFrameMsg struct{ frame conn.Frame }
+type toolHandledMsg struct{ name string }
+type permDecisionMsg struct{ allowed bool }
 
-// shortID is a 6-char hex from uuid for session ids.
-func shortID() string {
-	id := uuid.New().String()
-	clean := strings.ReplaceAll(id, "-", "")
-	if len(clean) < 6 {
-		return clean
-	}
-	return clean[:6]
-}
-
-// dirTag extracts the last 2 path components for a session label.
-func dirTag(cwd string) string {
-	cwd = strings.TrimRight(cwd, "/")
-	if cwd == "" {
-		return "cwd"
-	}
-	parts := strings.Split(cwd, "/")
-	if len(parts) < 2 {
-		return parts[len(parts)-1]
-	}
-	return parts[len(parts)-1]
-}
-
-// pushChat appends a completed message to the history and re-renders.
+// ── message log helpers ──────────────────────────────────────────────
 func (m *Model) pushChat(role, text string) {
 	m.messages = append(m.messages, chatMsg{Role: role, Text: text, Timestamp: time.Now()})
 	m.rerenderViewport()
 }
 
-// startStream starts a new streaming assistant message. Subsequent deltas
-// append to its Text field.
 func (m *Model) startStream() {
 	m.messages = append(m.messages, chatMsg{Role: "assistant", Text: "", Timestamp: time.Now(), Streaming: true})
 	m.currentStream = &m.messages[len(m.messages)-1]
@@ -181,15 +213,15 @@ func (m *Model) endStream() {
 	m.rerenderViewport()
 }
 
-// sendChat wraps proto.Out Send with the session's metadata filled.
+// sendChat wraps a chat message with session metadata.
 func (m *Model) sendChat(content string) tea.Cmd {
 	return func() tea.Msg {
-		err := m.client.Send(proto.Out{
-			Type:      "chat",
-			SessionID: m.sess,
-			Content:   content,
-			UserName:  m.cfg.User,
-			CWD:       m.cwd,
+		err := m.client.Send(map[string]any{
+			"type":      "chat",
+			"sessionId": m.sess,
+			"content":   content,
+			"userName":  m.cfg.Connection.User,
+			"cwd":       m.cwd,
 		})
 		if err != nil {
 			return connErrorMsg{err: err.Error()}
@@ -197,3 +229,11 @@ func (m *Model) sendChat(content string) tea.Cmd {
 		return nil
 	}
 }
+
+// dirTag extracts the last path component for a session label.
+func dirTag(cwd string) string {
+	cwd = strings.TrimRight(cwd, string(filepath.Separator))
+	return filepath.Base(cwd)
+}
+
+func _fmtBytes(n int) string { return fmt.Sprintf("%d bytes", n) }
