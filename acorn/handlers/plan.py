@@ -39,15 +39,19 @@ class PlanHandler:
         # Broadcast to companion app so it shows plan approval too
         b.broadcast('plan:show-approval', text=self.state.last_plan_text[:2000])
 
-        # Use questions handler for the selector
+        # Use questions handler for the selector. IMPORTANT: start_questions
+        # replaces the entire QuestionState, so plan_approval must be set
+        # AFTER that call — otherwise the flag is wiped and the Execute
+        # answer falls through to the normal-answer branch, which re-fires
+        # _send_answers and loops indefinitely when a plan is stashed.
         qh = b.get_questions_handler()
-        qh.state.plan_approval = True
         qh.start_questions([{
             'text': 'Plan ready — what would you like to do?',
             'options': ['▶ Execute plan', '✎ Revise with feedback', '✕ Cancel'],
             'multi': False,
             'index': 1,
         }])
+        qh.state.plan_approval = True
 
     def _show_file_summary(self, plan_text):
         b = self.bridge
@@ -100,9 +104,16 @@ class PlanHandler:
         if pending_answers is not None:
             qh._pending_answers = None
 
+        # Clear the stashed plan text on EVERY branch. If we don't, the
+        # next user response could re-trigger _send_answers -> show_choices
+        # because the stash is still populated and plan_mode may not be
+        # reset yet (revise keeps plan_mode on).
+        plan_text_for_save = s.last_plan_text
+        s.last_plan_text = ''
+
         if text == '1' or text.lower().startswith('exec'):
             from acorn.cli import _save_plan
-            plan_path = _save_plan(b.cwd, s.last_plan_text)
+            plan_path = _save_plan(b.cwd, plan_text_for_save)
             if plan_path:
                 b.log(b.themed_text(f'  Plan saved to {plan_path}', style=t['muted']))
 
