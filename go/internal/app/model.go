@@ -15,6 +15,7 @@ import (
 	"github.com/yumlevi/acorn-cli/go/internal/config"
 	"github.com/yumlevi/acorn-cli/go/internal/conn"
 	"github.com/yumlevi/acorn-cli/go/internal/proto"
+	"github.com/yumlevi/acorn-cli/go/internal/sessionlog"
 	"github.com/yumlevi/acorn-cli/go/internal/tools"
 )
 
@@ -73,6 +74,14 @@ type Model struct {
 	// sendProgramMsg is wired by main.go after tea.NewProgram so off-thread
 	// goroutines (the permissions blocking prompt) can poke the UI.
 	sendProgramMsg func(msg tea.Msg)
+
+	// Session writer — appends every user/assistant/tool turn to a JSONL
+	// file under ~/.acorn/sessions/ for crash recovery + /resume picker.
+	writer *sessionlog.Writer
+
+	// Diagnostic log at ~/.acorn/logs/<ts>_<session>.log — matches Python's
+	// session_log.py output for parity across acorn variants.
+	dlog *sessionlog.DebugLogger
 }
 
 // SetProgram stores the reference so off-thread code can deliver messages.
@@ -104,6 +113,10 @@ func New(cfg *config.Config, cwd, sess string, planMode bool) *Model {
 	}
 	m.perms = newTUIPerms(m)
 	m.exec = tools.New(m.perms, cwd, filepath.Join(cwd, ".acorn", "logs"))
+	if w, err := sessionlog.Open(cfg.GlobalDir, sess); err == nil {
+		m.writer = w
+	}
+	m.dlog = sessionlog.OpenDebug(cfg.GlobalDir, sess, cfg.Connection.User, cwd)
 	m.exec.Hooks.OnExecLine = func(line string) {
 		// Keep a low-noise preview in the status bar.
 		if len(line) > 120 {
@@ -111,13 +124,35 @@ func New(cfg *config.Config, cwd, sess string, planMode bool) *Model {
 		}
 		m.status = "⚙ " + line
 	}
+	m.exec.Hooks.OnToolDone = func(name string, input map[string]any, result any, ms int) {
+		if m.writer != nil {
+			m.writer.WriteTool(name, input, result, true, ms)
+		}
+		if m.dlog != nil {
+			m.dlog.Info("tool", name, "ms", ms)
+		}
+	}
 	return m
 }
 
 func (m *Model) Init() tea.Cmd {
 	m.client = conn.New(m.cfg.Connection.Host, m.cfg.Connection.Port, m.cfg.Connection.User, m.cfg.Connection.Key)
-	m.client.OnConnected = func() { /* handled via connOpenMsg below */ }
-	m.client.OnDisconnected = func() { /* likewise */ }
+	m.client.OnConnected = func() {}
+	m.client.OnDisconnected = func() {}
+	if m.dlog != nil {
+		m.client.Logger = func(level, tag, msg string) {
+			switch level {
+			case "error":
+				m.dlog.Error(tag, msg)
+			case "warn":
+				m.dlog.Warn(tag, msg)
+			case "info":
+				m.dlog.Info(tag, msg)
+			default:
+				m.dlog.Debug(tag, msg)
+			}
+		}
+	}
 	return tea.Batch(
 		m.dialCmd(),
 		m.recvCmd(),
@@ -190,6 +225,14 @@ type permDecisionMsg struct{ allowed bool }
 func (m *Model) pushChat(role, text string) {
 	m.messages = append(m.messages, chatMsg{Role: role, Text: text, Timestamp: time.Now()})
 	m.rerenderViewport()
+	if m.writer != nil {
+		switch role {
+		case "user":
+			m.writer.WriteUser(text)
+		case "assistant":
+			m.writer.WriteAssistant(text, nil, 0)
+		}
+	}
 }
 
 func (m *Model) startStream() {
@@ -208,9 +251,30 @@ func (m *Model) appendDelta(t string) {
 func (m *Model) endStream() {
 	if m.currentStream != nil {
 		m.currentStream.Streaming = false
+		text := m.currentStream.Text
 		m.currentStream = nil
+		if m.writer != nil && text != "" {
+			m.writer.WriteAssistant(text, nil, 0)
+		}
 	}
 	m.rerenderViewport()
+}
+
+// Broadcast sends a typed message to observers (companion app) with
+// sessionId auto-filled. Mirrors acorn/bridge.py:broadcast.
+func (m *Model) Broadcast(msgType string, kv map[string]any) {
+	if m.client == nil {
+		return
+	}
+	payload := make(map[string]any, len(kv)+2)
+	for k, v := range kv {
+		payload[k] = v
+	}
+	payload["type"] = msgType
+	if _, ok := payload["sessionId"]; !ok {
+		payload["sessionId"] = m.sess
+	}
+	_ = m.client.Send(payload)
 }
 
 // sendChat wraps a chat message with session metadata.

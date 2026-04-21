@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 )
 
 // Server-side tools: we must NOT claim these; signal fallback by returning
@@ -68,6 +69,9 @@ type Hooks struct {
 	OnCodeView func(path, content string, isNew bool)
 	// OnCodeDiff fires after a successful edit_file.
 	OnCodeDiff func(path, oldText, newText string)
+	// OnToolDone fires after every claimed tool call with its final
+	// result, so the caller can persist to the session writer.
+	OnToolDone func(name string, input map[string]any, result any, durationMs int)
 }
 
 type Executor struct {
@@ -126,9 +130,20 @@ func (e *Executor) Execute(name string, inputRaw json.RawMessage) (result any, c
 
 	if !e.Perms.IsAutoApproved(name, input) {
 		if !e.Perms.Prompt(name, input) {
-			return map[string]string{"error": "Denied by user"}, true
+			r := map[string]string{"error": "Denied by user"}
+			if e.Hooks.OnToolDone != nil {
+				e.Hooks.OnToolDone(name, input, r, 0)
+			}
+			return r, true
 		}
 	}
+
+	start := time.Now()
+	defer func() {
+		if claimed && e.Hooks.OnToolDone != nil {
+			e.Hooks.OnToolDone(name, input, result, int(time.Since(start).Milliseconds()))
+		}
+	}()
 
 	switch name {
 	case "read_file":

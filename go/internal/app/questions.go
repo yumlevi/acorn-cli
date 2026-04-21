@@ -48,6 +48,17 @@ func (m *Model) openQuestionModal(qs []question) {
 		answers:   make([]string, len(qs)),
 		checked:   map[int]bool{},
 	}
+	// Mirror Python's questions.py:start_questions — tell the companion
+	// app so mobile observers can render the same sheet.
+	items := make([]map[string]any, 0, len(qs))
+	for i, q := range qs {
+		item := map[string]any{"text": q.Text, "multi": q.Multi, "index": i + 1}
+		if q.Options != nil {
+			item["options"] = q.Options
+		}
+		items = append(items, item)
+	}
+	m.Broadcast("state:questions", map[string]any{"questions": items})
 }
 
 func (m *Model) openStructuredQuestion(f proto.AskUser) {
@@ -338,6 +349,8 @@ func (m *Model) finishQuestions() (tea.Model, tea.Cmd) {
 	m.pushChat("user", answerBody)
 	m.generating = true
 	m.status = "waiting…"
+	// Dismiss mobile question sheet.
+	m.Broadcast("interactive:resolved", map[string]any{"kind": "questions"})
 	return m, m.sendChat(answerBody)
 }
 

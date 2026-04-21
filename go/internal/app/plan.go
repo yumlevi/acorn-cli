@@ -21,6 +21,12 @@ type planModal struct {
 func (m *Model) openPlanModal(text string) {
 	m.modal = modalPlan
 	m.planApproval = &planModal{text: text}
+	// Relay plan text to companion observers (mobile shows same modal).
+	preview := text
+	if len(preview) > 2000 {
+		preview = preview[:2000]
+	}
+	m.Broadcast("plan:show-approval", map[string]any{"text": preview})
 }
 
 func (pm *planModal) view(w, h int) string {
@@ -104,6 +110,7 @@ func (m *Model) updatePlanModal(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.modal = modalNone
 		m.planApproval = nil
+		m.Broadcast("plan:decided", map[string]any{"action": "cancel"})
 		m.pushChat("system", "Plan dismissed.")
 		return m, nil
 	case "up":
@@ -122,6 +129,7 @@ func (m *Model) updatePlanModal(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case 2:
 			m.modal = modalNone
 			m.planApproval = nil
+			m.Broadcast("plan:decided", map[string]any{"action": "cancel"})
 			m.pushChat("system", "Plan discarded.")
 			return m, nil
 		}
@@ -139,6 +147,8 @@ func (m *Model) planExecute(text string) (tea.Model, tea.Cmd) {
 	m.planMode = false
 	m.modal = modalNone
 	m.planApproval = nil
+	m.Broadcast("plan:decided", map[string]any{"action": "execute"})
+	m.Broadcast("plan:set-mode", map[string]any{"enabled": false})
 	m.pushChat("system", "Mode → execute")
 	m.pushChat("system", "▶ Executing plan…")
 	m.generating = true
@@ -156,6 +166,7 @@ func (m *Model) planReviseWithFeedback(fb string) (tea.Model, tea.Cmd) {
 	m.pushChat("user", "(feedback) "+fb)
 	m.generating = true
 	m.status = "waiting…"
+	m.Broadcast("plan:decided", map[string]any{"action": "revise", "feedback": fb})
 	return m, m.sendChatMessage("[PLAN FEEDBACK: Revise the plan. Stay in plan mode.]\n\n" + fb)
 }
 

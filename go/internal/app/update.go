@@ -9,6 +9,7 @@ import (
 
 	"github.com/yumlevi/acorn-cli/go/internal/conn"
 	"github.com/yumlevi/acorn-cli/go/internal/proto"
+	"github.com/yumlevi/acorn-cli/go/internal/sessionlog"
 )
 
 // PlanPrefix — port of acorn/constants.py:PLAN_PREFIX. Prepended to the
@@ -105,6 +106,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case toolHandledMsg:
 		return m, m.toolCmd()
+
+	case updateCheckResult:
+		if msg.Err != "" {
+			m.pushChat("system", "Update check failed: "+msg.Err)
+			return m, nil
+		}
+		m.pushChat("system", fmt.Sprintf("Latest release: %s — %s", msg.Version, msg.URL))
+		return m, nil
 	}
 
 	var cmd tea.Cmd
@@ -258,6 +267,40 @@ func (m *Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 	case "/approve-all-dangerous":
 		m.perms.SetMode(PermYolo)
 		m.pushChat("system", "Perms → yolo")
+	case "/update":
+		check := len(parts) >= 2 && parts[1] == "check"
+		sub := "checking GitHub releases…"
+		if !check {
+			sub = "(dry run — Go port updates by re-downloading the binary; see go/README.md)"
+		}
+		m.pushChat("system", sub)
+		return m, checkUpdateCmd(check)
+	case "/bg":
+		if len(parts) < 2 || parts[1] == "list" {
+			m.pushChat("system", "Background processes: (none — Go port doesn't have a process manager yet)")
+			return m, nil
+		}
+		m.pushChat("system", "/bg run/kill not implemented in the Go port yet. Use a terminal multiplexer (tmux/screen) for now.")
+	case "/sessions":
+		root := findGitRoot(m.cwd)
+		if root == "" {
+			root = m.cwd
+		}
+		list := sessionlog.ListProjectSessions(m.cfg.GlobalDir, m.cfg.Connection.User, root)
+		if len(list) == 0 {
+			m.pushChat("system", "No saved sessions for this project")
+			return m, nil
+		}
+		var lines []string
+		lines = append(lines, fmt.Sprintf("Sessions for this project (%d):", len(list)))
+		for i, s := range list {
+			if i >= 15 {
+				break
+			}
+			lines = append(lines, fmt.Sprintf("  %2d. %-12s %3d msgs  %s", i+1, s.TimeAgo, s.MessageCount, truncateFor(s.Preview, 60)))
+		}
+		lines = append(lines, "", "/resume <sessionId> to pick one")
+		m.pushChat("system", strings.Join(lines, "\n"))
 	default:
 		m.pushChat("system", "Unknown command: "+cmd+"  (type /help)")
 	}
@@ -353,11 +396,71 @@ func (m *Model) handleFrame(f conn.Frame) tea.Cmd {
 			label = "plan"
 		}
 		m.pushChat("system", "Mode → "+label+" (remote)")
-	case "plan:decision", "plan:decided", "plan:set-mode",
+	case "plan:decision":
+		// Mobile observer pressed execute/revise/cancel — resolve the
+		// local modal if open.
+		var v struct {
+			Type     string `json:"type"`
+			Action   string `json:"action"`
+			Feedback string `json:"feedback,omitempty"`
+		}
+		_ = json.Unmarshal(f.Raw, &v)
+		if m.modal == modalPlan && m.planApproval != nil {
+			text := m.planApproval.text
+			switch v.Action {
+			case "execute":
+				m.pushChat("system", "→ Execute (from mobile)")
+				m2, cmd := m.planExecute(text)
+				_ = m2
+				return cmd
+			case "revise":
+				m.pushChat("system", "→ Revise (from mobile)")
+				m2, cmd := m.planReviseWithFeedback(v.Feedback)
+				_ = m2
+				return cmd
+			case "cancel":
+				m.modal = modalNone
+				m.planApproval = nil
+				m.pushChat("system", "→ Cancel (from mobile)")
+			}
+		}
+	case "perm:query":
+		// Observer joined; reply with full interactive state so mobile
+		// can render the same sheets we have open.
+		m.Broadcast("perm:current-mode", map[string]any{"mode": string(m.perms.Mode())})
+		m.Broadcast("plan:set-mode", map[string]any{"enabled": m.planMode})
+		if m.modal == modalPlan && m.planApproval != nil {
+			preview := m.planApproval.text
+			if len(preview) > 2000 {
+				preview = preview[:2000]
+			}
+			m.Broadcast("plan:show-approval", map[string]any{"text": preview})
+		}
+		if m.modal == modalQuestion && m.question != nil && m.question.source == "prose" {
+			items := make([]map[string]any, 0, len(m.question.questions))
+			for i, q := range m.question.questions {
+				item := map[string]any{"text": q.Text, "multi": q.Multi, "index": i + 1}
+				if q.Options != nil {
+					item["options"] = q.Options
+				}
+				items = append(items, item)
+			}
+			m.Broadcast("state:questions", map[string]any{"questions": items})
+		}
+	case "perm:set-mode":
+		var v struct {
+			Mode string `json:"mode"`
+		}
+		_ = json.Unmarshal(f.Raw, &v)
+		if v.Mode != "" {
+			m.perms.SetMode(PermMode(v.Mode))
+			m.pushChat("system", "Perms → "+v.Mode+" (from mobile)")
+		}
+	case "plan:decided", "plan:set-mode",
 		"plan:show-approval", "interactive:resolved",
 		"delegate:config", "tool:awaiting-approval",
-		"state:questions":
-		// observer relays — already surfaced elsewhere for mobile peers.
+		"state:questions", "perm:current-mode":
+		// observer relays — outbound only here (we send these to observers)
 	case "conn:error":
 		// already surfaced via connErrorMsg path
 	}
@@ -406,6 +509,14 @@ func (m *Model) postStreamChecks() {
 	}
 }
 
+// truncateFor is a mini helper for log-line output (view.go has its own).
+func truncateFor(s string, n int) string {
+	if len(s) > n {
+		return s[:n] + "…"
+	}
+	return s
+}
+
 // SlashHelp returns the command help block.
 func SlashHelp() string {
 	return strings.Join([]string{
@@ -421,5 +532,6 @@ func SlashHelp() string {
 		"/mode <auto|ask|locked|yolo|rules> — tool approval mode",
 		"/approve-all — shortcut for /mode auto",
 		"/approve-all-dangerous — shortcut for /mode yolo",
+		"/sessions — list saved sessions for this project",
 	}, "\n")
 }
