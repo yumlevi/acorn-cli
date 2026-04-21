@@ -92,6 +92,14 @@ class PlanHandler:
         b.sm.transition(b.AppState.IDLE)
         t = b.theme
 
+        # If the questions handler queued answers while we were composing
+        # the plan approval, retrieve them here so each branch below can
+        # decide whether to fire them on the wire.
+        qh = b.get_questions_handler()
+        pending_answers = getattr(qh, '_pending_answers', None)
+        if pending_answers is not None:
+            qh._pending_answers = None
+
         if text == '1' or text.lower().startswith('exec'):
             from acorn.cli import _save_plan
             plan_path = _save_plan(b.cwd, s.last_plan_text)
@@ -107,6 +115,12 @@ class PlanHandler:
             b.update_footer()
             b.update_mode_bar()
             b.update_header()
+            # If there were queued answers, send them first so the agent has
+            # the user's input in context, THEN fire the execute signal. The
+            # two messages arrive in order; the agent's next turn acts on
+            # the plan with the answers already absorbed.
+            if pending_answers:
+                asyncio.create_task(b.conn.send(chat_message(b.session_id, pending_answers, b.user, cwd=b.cwd)))
             asyncio.create_task(b.conn.send(chat_message(b.session_id, PLAN_EXECUTE_MSG, b.user, cwd=b.cwd)))
 
             # Notify observers
@@ -116,6 +130,11 @@ class PlanHandler:
         elif text == '3' or text.lower().startswith('cancel'):
             b.log(b.themed_text('  Plan discarded', style=t['muted']))
             b.scroll_bottom()
+            # Even on cancel, fire the queued answers if any — the agent
+            # should still know what the user chose, even if the plan is
+            # being dropped. They may want a different approach entirely.
+            if pending_answers:
+                asyncio.create_task(b.conn.send(chat_message(b.session_id, pending_answers, b.user, cwd=b.cwd)))
             self._broadcast_decision('cancel')
 
         else:
@@ -139,6 +158,10 @@ class PlanHandler:
             b.generating = True
             b.update_footer()
             b.update_header()
+            # Send queued answers first so the revision sees them, then the
+            # feedback. Agent will revise with both in context.
+            if pending_answers:
+                asyncio.create_task(b.conn.send(chat_message(b.session_id, pending_answers, b.user, cwd=b.cwd)))
             asyncio.create_task(b.conn.send(chat_message(b.session_id, feedback_msg, b.user, cwd=b.cwd)))
 
             # Notify observers

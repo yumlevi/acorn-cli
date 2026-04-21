@@ -303,6 +303,26 @@ class QuestionsHandler:
             b.scroll_bottom()
             return
 
+        # If the prior agent response contained BOTH a QUESTIONS: block AND
+        # a PLAN_READY marker, ws_events.py stashed the plan text into the
+        # plan handler. Now that questions are answered, surface the plan
+        # approval modal so Execute routes through handle_decision (which
+        # saves the plan). Without this step, the elif in ws_events.py would
+        # cause the plan approval to silently drop when questions were also
+        # present — making "execute" mode-flips bypass _save_plan entirely.
+        ph = b.get_plan_handler()
+        if b.plan_mode and ph.state.last_plan_text and not ph.state.awaiting_decision:
+            # Queue answers to be sent after the user makes a plan decision,
+            # instead of firing immediately. handle_decision('1') (Execute)
+            # sends PLAN_EXECUTE_MSG, which supersedes the answers — the
+            # agent already received them implicitly via the question round,
+            # and the execute message tells it to act on the plan.
+            # For '2' (Revise) and '3' (Cancel), fire the answers so the
+            # agent has the user's input in context for the next pass.
+            self._pending_answers = formatted
+            ph.show_choices()
+            return
+
         b.generating = True
         b.update_footer()
         b.update_header()

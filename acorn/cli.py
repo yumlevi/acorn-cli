@@ -104,8 +104,13 @@ async def _pick_session(sessions, renderer):
 
 
 def _save_plan(cwd: str, plan_text: str) -> str:
-    """Save an approved plan to .acorn/plans/ in the working directory."""
+    """Save an approved plan to .acorn/plans/ in the working directory.
+
+    Returns the absolute path on success, or None on failure. Failures are
+    logged to stderr so they're not silently lost.
+    """
     import time
+    import sys
     try:
         local = ensure_local_dir(cwd)
         plans_dir = local / 'plans'
@@ -116,7 +121,18 @@ def _save_plan(cwd: str, plan_text: str) -> str:
         clean = plan_text.replace('PLAN_READY', '').strip()
         filepath.write_text(f'# Plan — {ts}\n\n{clean}\n')
         return str(filepath)
-    except Exception:
+    except Exception as e:
+        # Don't silently swallow — the bare-except here used to hide
+        # permission / read-only-mount issues and leave users wondering
+        # why their plan never appeared in .acorn/plans/.
+        try:
+            print(
+                f'[plan-save] failed writing to {cwd}/.acorn/plans/: '
+                f'{type(e).__name__}: {e}',
+                file=sys.stderr,
+            )
+        except Exception:
+            pass
         return None
 
 

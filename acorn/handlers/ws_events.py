@@ -231,14 +231,21 @@ class WSEventsHandler:
         b.slog.info('question-detect', f'response={len(response)} chars, questions={len(questions)}',
                      has_marker='QUESTIONS' in response.upper() if response else False)
 
+        has_plan = bool(b.plan_mode and response and 'PLAN_READY' in response)
+        # If both markers present, stash the plan text now so it survives the
+        # questions round. The questions handler's _send_answers() checks for
+        # a stashed plan and shows the approval modal before firing the answer
+        # message, guaranteeing the agent can't "execute" without going
+        # through handle_decision (which is where _save_plan is called).
+        if has_plan:
+            b.get_plan_handler().state.last_plan_text = response
+
         if questions and len(questions) >= 1:
             b.log(Text(f'  Agent has {len(questions)} question(s) for you', style=t['accent2']))
             b.scroll_bottom()
             b.get_questions_handler().start_questions(questions)
-        elif b.plan_mode and response and 'PLAN_READY' in response:
-            plan_handler = b.get_plan_handler()
-            plan_handler.state.last_plan_text = response
-            plan_handler.show_choices()
+        elif has_plan:
+            b.get_plan_handler().show_choices()
 
         self.reset_stream()
 
