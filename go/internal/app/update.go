@@ -130,13 +130,32 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Expanded side-panel consumes everything — ctrl+p / esc close it.
+	// Expanded side-panel — ctrl+p / esc / q close; arrows scroll.
 	if m.panelExpand {
 		switch msg.String() {
 		case "ctrl+p", "esc", "q":
 			m.panelExpand = false
+			return m, nil
 		case "ctrl+c":
 			return m, tea.Quit
+		case "up":
+			m.panelView.LineUp(1)
+			return m, nil
+		case "down":
+			m.panelView.LineDown(1)
+			return m, nil
+		case "pgup":
+			m.panelView.LineUp(m.panelView.Height - 2)
+			return m, nil
+		case "pgdown", " ":
+			m.panelView.LineDown(m.panelView.Height - 2)
+			return m, nil
+		case "home", "g":
+			m.panelView.GotoTop()
+			return m, nil
+		case "end", "G":
+			m.panelView.GotoBottom()
+			return m, nil
 		}
 		return m, nil
 	}

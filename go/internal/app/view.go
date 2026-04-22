@@ -98,14 +98,21 @@ func (m *Model) View() string {
 			sidePanels = ""
 		}
 	}
-	m.viewport.Width = leftW
+	// Reserve 1 column for the chat scrollbar.
+	m.viewport.Width = leftW - 1
+	if m.viewport.Width < 20 {
+		m.viewport.Width = leftW
+	}
 	m.rerenderViewport()
+
+	chatBar := scrollbar(&m.viewport, bodyH, m.theme)
+	chatView := lipgloss.JoinHorizontal(lipgloss.Top, m.viewport.View(), chatBar)
 
 	var body string
 	if sidePanels != "" {
-		body = lipgloss.JoinHorizontal(lipgloss.Top, m.viewport.View(), sidePanels)
+		body = lipgloss.JoinHorizontal(lipgloss.Top, chatView, sidePanels)
 	} else {
-		body = m.viewport.View()
+		body = chatView
 	}
 
 	parts := []string{header, body}

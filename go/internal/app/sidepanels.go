@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -224,10 +225,46 @@ func (m *Model) renderSubagentPanel(width, maxH int) string {
 		Render(inner)
 }
 
-// renderExpandedPanel — full-screen activity browser (Ctrl+P view).
-// Shows the most recent code events + every subagent with full line
-// history. Scroll-through will come later; for now it's a static dump.
+// renderExpandedPanel — full-screen activity browser (Ctrl+P view) with
+// its own scrollable viewport + scrollbar. Up/down/pgup/pgdn scrolls.
 func (m *Model) renderExpandedPanel() string {
+	body := m.buildExpandedPanelBody()
+
+	// Inner box dimensions after border + padding.
+	innerW := m.width - 6 // 2 border + 4 horizontal padding
+	if innerW < 10 {
+		innerW = 10
+	}
+	innerH := m.height - 6 // 2 border + 2 vertical padding + 2 hint
+	if innerH < 5 {
+		innerH = 5
+	}
+
+	// Re-init viewport on first open or resize.
+	if !m.panelViewInit || m.panelView.Width != innerW || m.panelView.Height != innerH {
+		m.panelView = viewport.New(innerW, innerH)
+		m.panelViewInit = true
+	}
+	m.panelView.SetContent(body)
+
+	bar := scrollbar(&m.panelView, innerH, m.theme)
+	content := lipgloss.JoinHorizontal(lipgloss.Top, m.panelView.View(), bar)
+
+	hint := lipgloss.NewStyle().Foreground(m.theme.Muted).
+		Render("↑↓/PgUp/PgDn scroll · Ctrl+P or Esc to close")
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(m.theme.Accent).
+		Padding(1, 2).
+		Width(m.width - 2).
+		Height(m.height - 2).
+		Render(content + "\n" + hint)
+}
+
+// buildExpandedPanelBody composes the content string — separate function
+// so the viewport can re-content when data changes.
+func (m *Model) buildExpandedPanelBody() string {
 	var sections []string
 	codeTitle := lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(
 		fmt.Sprintf("Code activity (%d events)", len(m.codeViews)))
@@ -235,11 +272,7 @@ func (m *Model) renderExpandedPanel() string {
 	if len(m.codeViews) == 0 {
 		sections = append(sections, lipgloss.NewStyle().Faint(true).Render("  (none yet)"))
 	} else {
-		start := len(m.codeViews) - 20
-		if start < 0 {
-			start = 0
-		}
-		for _, e := range m.codeViews[start:] {
+		for _, e := range m.codeViews {
 			icon := "📄"
 			if e.IsDiff {
 				icon = "✏️ "
@@ -251,16 +284,14 @@ func (m *Model) renderExpandedPanel() string {
 		}
 	}
 	sections = append(sections, "")
+	saCount := 0
+	if m.subagents != nil {
+		saCount = len(m.subagents.Order)
+	}
 	saTitle := lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent2).Render(
-		fmt.Sprintf("Subagents (%d tasks)",
-			func() int {
-				if m.subagents == nil {
-					return 0
-				}
-				return len(m.subagents.Order)
-			}()))
+		fmt.Sprintf("Subagents (%d tasks)", saCount))
 	sections = append(sections, saTitle)
-	if m.subagents == nil || len(m.subagents.Order) == 0 {
+	if saCount == 0 {
 		sections = append(sections, lipgloss.NewStyle().Faint(true).Render("  (none yet)"))
 	} else {
 		for _, id := range m.subagents.Order {
@@ -275,23 +306,12 @@ func (m *Model) renderExpandedPanel() string {
 				icon = "✕"
 			}
 			sections = append(sections, fmt.Sprintf("  %s %s — %s", icon, shortID(id), st.Title))
-			for _, line := range tailN(st.Lines, 5) {
+			for _, line := range st.Lines {
 				sections = append(sections, lipgloss.NewStyle().Faint(true).Render("    "+trimTo(line, m.width-8)))
 			}
 		}
 	}
-	body := strings.Join(sections, "\n")
-
-	hint := lipgloss.NewStyle().Foreground(m.theme.Muted).
-		Render("Ctrl+P to close · this is a snapshot — reopen for fresh state")
-
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(m.theme.Accent).
-		Padding(1, 2).
-		Width(m.width - 4).
-		Height(m.height - 4).
-		Render(body + "\n\n" + hint)
+	return strings.Join(sections, "\n")
 }
 
 func shortID(id string) string {

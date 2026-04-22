@@ -84,9 +84,11 @@ type Model struct {
 	dlog *sessionlog.DebugLogger
 
 	// Side panel state for code viewer + subagent activity.
-	codeViews   []codeViewEntry
-	subagents   *subagentPanel
-	panelExpand bool // ctrl+p opens a full-height browser
+	codeViews    []codeViewEntry
+	subagents    *subagentPanel
+	panelExpand  bool               // ctrl+p opens a full-height browser
+	panelView    viewport.Model     // scrollable viewport for the expanded panel
+	panelViewInit bool
 
 	// Slash-command autocomplete state.
 	suggest slashSuggest
