@@ -2,13 +2,11 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -98,7 +96,7 @@ func main() {
 			fmt.Printf("Resuming: %s  (%s)\n",
 				truncate(list[0].Preview, 60), list[0].TimeAgo)
 		case len(list) > 1:
-			picked, ok := pickSession(list)
+			picked, ok := runSessionPicker(list)
 			if !ok {
 				fmt.Fprintln(os.Stderr, "cancelled")
 				os.Exit(1)
@@ -138,43 +136,6 @@ func fail(prefix string, err error) {
 		fmt.Fprintln(os.Stderr, prefix)
 	}
 	os.Exit(1)
-}
-
-// pickSession prompts the user to choose from a list of saved sessions
-// (printed before the TUI boots). Returns the picked session id, or
-// false if the user pressed Enter on an empty input to pick the newest.
-func pickSession(items []sessionlog.ProjectSession) (string, bool) {
-	fmt.Println()
-	fmt.Println("Select a session to resume (project-local):")
-	limit := 15
-	if limit > len(items) {
-		limit = len(items)
-	}
-	for i := 0; i < limit; i++ {
-		s := items[i]
-		fmt.Printf("  %2d. %-14s %3d msgs  %s\n",
-			i+1, s.TimeAgo, s.MessageCount, truncate(s.Preview, 60))
-	}
-	if len(items) > limit {
-		fmt.Printf("  … (%d more not shown)\n", len(items)-limit)
-	}
-	fmt.Printf("Enter number (1-%d, or blank for newest, q to abort): ", limit)
-
-	rd := bufio.NewReader(os.Stdin)
-	line, _ := rd.ReadString('\n')
-	line = strings.TrimSpace(line)
-	if line == "" {
-		return items[0].SessionID, true
-	}
-	if line == "q" || line == "Q" {
-		return "", false
-	}
-	n, err := strconv.Atoi(line)
-	if err != nil || n < 1 || n > limit {
-		fmt.Fprintln(os.Stderr, "invalid choice — using newest")
-		return items[0].SessionID, true
-	}
-	return items[n-1].SessionID, true
 }
 
 func truncate(s string, n int) string {
