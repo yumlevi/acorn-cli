@@ -8,26 +8,31 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// codeViewEntry tracks a single file view/diff event the agent emitted
-// via chat:tool / code:view / code:diff. Recent entries surface in a
-// right-side panel so the operator can watch what the agent is touching.
+// codeViewEntry tracks a single file view/diff event.
 type codeViewEntry struct {
-	Path   string
-	Text   string // either full content (view) or a diff summary
-	IsDiff bool
-	IsNew  bool
-	When   time.Time
+	Path    string
+	Content string // only for view (truncated preview)
+	OldText string
+	NewText string
+	Text    string // short label like "203 lines, 4124 bytes" or "+12/-3 lines"
+	IsDiff  bool
+	IsNew   bool
+	When    time.Time
 }
 
 // pushCodeView records a read_file / write_file hit.
 func (m *Model) pushCodeView(path, content string, isNew bool) {
 	lineCount := strings.Count(content, "\n") + 1
-	preview := fmt.Sprintf("%d lines, %d bytes", lineCount, len(content))
-	m.codeViews = append(m.codeViews, codeViewEntry{
-		Path: path, Text: preview, IsNew: isNew, When: time.Now(),
-	})
-	if len(m.codeViews) > 20 {
-		m.codeViews = m.codeViews[len(m.codeViews)-20:]
+	e := codeViewEntry{
+		Path:    path,
+		Content: truncateStr(content, 4000),
+		Text:    fmt.Sprintf("%d lines, %d bytes", lineCount, len(content)),
+		IsNew:   isNew,
+		When:    time.Now(),
+	}
+	m.codeViews = append(m.codeViews, e)
+	if len(m.codeViews) > 50 {
+		m.codeViews = m.codeViews[len(m.codeViews)-50:]
 	}
 }
 
@@ -35,69 +40,95 @@ func (m *Model) pushCodeView(path, content string, isNew bool) {
 func (m *Model) pushCodeDiff(path, oldT, newT string) {
 	added := strings.Count(newT, "\n")
 	removed := strings.Count(oldT, "\n")
-	preview := fmt.Sprintf("+%d / -%d lines", added, removed)
 	m.codeViews = append(m.codeViews, codeViewEntry{
-		Path: path, Text: preview, IsDiff: true, When: time.Now(),
+		Path:    path,
+		OldText: truncateStr(oldT, 2000),
+		NewText: truncateStr(newT, 2000),
+		Text:    fmt.Sprintf("+%d / -%d lines", added, removed),
+		IsDiff:  true,
+		When:    time.Now(),
 	})
-	if len(m.codeViews) > 20 {
-		m.codeViews = m.codeViews[len(m.codeViews)-20:]
+	if len(m.codeViews) > 50 {
+		m.codeViews = m.codeViews[len(m.codeViews)-50:]
 	}
 }
 
-// renderCodePanel returns the rendered side panel (empty string if no entries).
-func (m *Model) renderCodePanel(width, height int) string {
-	if len(m.codeViews) == 0 {
+// renderCodePanel returns the compact right-column code panel. Height is
+// hard-capped by maxH; extra entries scroll off the top.
+func (m *Model) renderCodePanel(width, maxH int) string {
+	if len(m.codeViews) == 0 || width < 20 || maxH < 5 {
 		return ""
 	}
-	var b strings.Builder
 	title := lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render("Code activity")
-	b.WriteString(title + "\n\n")
-	start := 0
-	if len(m.codeViews) > height-4 {
-		start = len(m.codeViews) - (height - 4)
+	bodyH := maxH - 4 // border(2) + padding(2)
+	if bodyH < 1 {
+		bodyH = 1
 	}
+	// Each entry is 2 lines (path+meta); fit as many as we can from the tail.
+	perEntry := 2
+	maxEntries := bodyH / perEntry
+	if maxEntries < 1 {
+		maxEntries = 1
+	}
+	start := len(m.codeViews) - maxEntries
+	if start < 0 {
+		start = 0
+	}
+	var lines []string
 	for _, e := range m.codeViews[start:] {
 		icon := "📄"
 		if e.IsDiff {
-			icon = "✏️"
+			icon = "✏️ "
 		} else if e.IsNew {
 			icon = "🆕"
 		}
+		path := e.Path
+		maxPathW := width - 4 - 4 // border+padding+icon
+		if maxPathW < 8 {
+			maxPathW = 8
+		}
+		if len(path) > maxPathW {
+			path = "…" + path[len(path)-maxPathW+1:]
+		}
 		ts := e.When.Format("15:04:05")
-		line := fmt.Sprintf("%s %s %s\n   %s\n",
-			icon, e.Path,
-			lipgloss.NewStyle().Foreground(m.theme.Muted).Render(ts),
-			lipgloss.NewStyle().Foreground(m.theme.Muted).Render(e.Text))
-		b.WriteString(line)
+		row1 := icon + " " + path
+		row2 := lipgloss.NewStyle().Foreground(m.theme.Muted).
+			Render("   " + ts + "  " + e.Text)
+		lines = append(lines, row1, row2)
 	}
-	return borderStyle.Copy().
+	more := ""
+	if start > 0 {
+		more = "\n" + lipgloss.NewStyle().Foreground(m.theme.Muted).Render(
+			"  "+itoa(start)+" older hidden — Ctrl+P to expand")
+	}
+	inner := title + "\n\n" + strings.Join(lines, "\n") + more
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
 		BorderForeground(m.theme.Accent2).
+		Padding(0, 1).
 		Width(width - 2).
-		Height(height).
-		Padding(1, 1).
-		Render(b.String())
+		Height(maxH - 2).
+		Render(inner)
 }
 
-// subagent panel — tracks subagent:* messages the server streams for
-// delegate_task runs.
+// subagent panel — tracks subagent:* ws frames.
 type subagentPanel struct {
 	Tasks map[string]*subagentState
-	Order []string // insertion order for deterministic rendering
+	Order []string
 }
 
 type subagentState struct {
-	TaskID   string
-	Title    string
-	Status   string // running / done / error / cancelled
-	Lines    []string
-	Updated  time.Time
+	TaskID  string
+	Title   string
+	Status  string
+	Lines   []string
+	Updated time.Time
 }
 
 func newSubagentPanel() *subagentPanel {
 	return &subagentPanel{Tasks: map[string]*subagentState{}}
 }
 
-// handleSubagentFrame routes "subagent:<verb>" ws messages.
 func (m *Model) handleSubagentFrame(verb string, raw map[string]any) {
 	if m.subagents == nil {
 		m.subagents = newSubagentPanel()
@@ -123,8 +154,8 @@ func (m *Model) handleSubagentFrame(verb string, raw map[string]any) {
 		line := asString(raw["text"], asString(raw["line"], ""))
 		if line != "" {
 			st.Lines = append(st.Lines, line)
-			if len(st.Lines) > 10 {
-				st.Lines = st.Lines[len(st.Lines)-10:]
+			if len(st.Lines) > 50 {
+				st.Lines = st.Lines[len(st.Lines)-50:]
 			}
 		}
 	case "done":
@@ -136,14 +167,27 @@ func (m *Model) handleSubagentFrame(verb string, raw map[string]any) {
 	}
 }
 
-func (m *Model) renderSubagentPanel(width, height int) string {
-	if m.subagents == nil || len(m.subagents.Order) == 0 {
+func (m *Model) renderSubagentPanel(width, maxH int) string {
+	if m.subagents == nil || len(m.subagents.Order) == 0 || width < 20 || maxH < 5 {
 		return ""
 	}
-	var b strings.Builder
 	title := lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent2).Render("Subagents")
-	b.WriteString(title + "\n\n")
-	for _, id := range m.subagents.Order {
+	bodyH := maxH - 4
+	if bodyH < 1 {
+		bodyH = 1
+	}
+	// Each task: 1 title line + 1 status line = 2 lines. Fit from tail.
+	perTask := 2
+	maxTasks := bodyH / perTask
+	if maxTasks < 1 {
+		maxTasks = 1
+	}
+	start := len(m.subagents.Order) - maxTasks
+	if start < 0 {
+		start = 0
+	}
+	var lines []string
+	for _, id := range m.subagents.Order[start:] {
 		st := m.subagents.Tasks[id]
 		icon := "●"
 		color := m.theme.Accent
@@ -158,18 +202,96 @@ func (m *Model) renderSubagentPanel(width, height int) string {
 			icon = "✕"
 			color = m.theme.Muted
 		}
+		label := trimTo(st.Title, width-8)
+		if label == "" {
+			label = "(running)"
+		}
 		tag := lipgloss.NewStyle().Bold(true).Foreground(color).Render(icon + " " + shortID(id))
-		b.WriteString(tag + " " + trimTo(st.Title, 40) + "\n")
-		for _, line := range tailN(st.Lines, 3) {
-			b.WriteString(lipgloss.NewStyle().Foreground(m.theme.Muted).Render("   " + trimTo(line, width-6)) + "\n")
+		lines = append(lines, tag, lipgloss.NewStyle().Foreground(m.theme.Muted).Render("   "+label))
+	}
+	more := ""
+	if start > 0 {
+		more = "\n" + lipgloss.NewStyle().Foreground(m.theme.Muted).Render(
+			"  "+itoa(start)+" older hidden — Ctrl+P to expand")
+	}
+	inner := title + "\n\n" + strings.Join(lines, "\n") + more
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(m.theme.Accent2).
+		Padding(0, 1).
+		Width(width - 2).
+		Height(maxH - 2).
+		Render(inner)
+}
+
+// renderExpandedPanel — full-screen activity browser (Ctrl+P view).
+// Shows the most recent code events + every subagent with full line
+// history. Scroll-through will come later; for now it's a static dump.
+func (m *Model) renderExpandedPanel() string {
+	var sections []string
+	codeTitle := lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(
+		fmt.Sprintf("Code activity (%d events)", len(m.codeViews)))
+	sections = append(sections, codeTitle)
+	if len(m.codeViews) == 0 {
+		sections = append(sections, lipgloss.NewStyle().Faint(true).Render("  (none yet)"))
+	} else {
+		start := len(m.codeViews) - 20
+		if start < 0 {
+			start = 0
+		}
+		for _, e := range m.codeViews[start:] {
+			icon := "📄"
+			if e.IsDiff {
+				icon = "✏️ "
+			} else if e.IsNew {
+				icon = "🆕"
+			}
+			sections = append(sections, fmt.Sprintf("  %s %s · %s · %s",
+				icon, e.Path, e.When.Format("15:04:05"), e.Text))
 		}
 	}
-	return borderStyle.Copy().
-		BorderForeground(m.theme.Accent2).
-		Width(width - 2).
-		Height(height).
-		Padding(1, 1).
-		Render(b.String())
+	sections = append(sections, "")
+	saTitle := lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent2).Render(
+		fmt.Sprintf("Subagents (%d tasks)",
+			func() int {
+				if m.subagents == nil {
+					return 0
+				}
+				return len(m.subagents.Order)
+			}()))
+	sections = append(sections, saTitle)
+	if m.subagents == nil || len(m.subagents.Order) == 0 {
+		sections = append(sections, lipgloss.NewStyle().Faint(true).Render("  (none yet)"))
+	} else {
+		for _, id := range m.subagents.Order {
+			st := m.subagents.Tasks[id]
+			icon := "●"
+			switch st.Status {
+			case "done":
+				icon = "✓"
+			case "error":
+				icon = "✗"
+			case "cancelled":
+				icon = "✕"
+			}
+			sections = append(sections, fmt.Sprintf("  %s %s — %s", icon, shortID(id), st.Title))
+			for _, line := range tailN(st.Lines, 5) {
+				sections = append(sections, lipgloss.NewStyle().Faint(true).Render("    "+trimTo(line, m.width-8)))
+			}
+		}
+	}
+	body := strings.Join(sections, "\n")
+
+	hint := lipgloss.NewStyle().Foreground(m.theme.Muted).
+		Render("Ctrl+P to close · this is a snapshot — reopen for fresh state")
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(m.theme.Accent).
+		Padding(1, 2).
+		Width(m.width - 4).
+		Height(m.height - 4).
+		Render(body + "\n\n" + hint)
 }
 
 func shortID(id string) string {
@@ -192,6 +314,13 @@ func trimTo(s string, n int) string {
 	return s
 }
 
+func truncateStr(s string, n int) string {
+	if len(s) > n {
+		return s[:n] + "…"
+	}
+	return s
+}
+
 func tailN(xs []string, n int) []string {
 	if len(xs) <= n {
 		return xs
@@ -199,8 +328,6 @@ func tailN(xs []string, n int) []string {
 	return xs[len(xs)-n:]
 }
 
-// asString is a tiny helper mirroring tools/executor.go's asString — we
-// duplicate to avoid an import cycle.
 func asString(v any, def string) string {
 	if s, ok := v.(string); ok {
 		return s

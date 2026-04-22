@@ -84,9 +84,12 @@ type Model struct {
 	dlog *sessionlog.DebugLogger
 
 	// Side panel state for code viewer + subagent activity.
-	codeViews []codeViewEntry
-	subagents *subagentPanel
-	showPanel bool // toggled with Tab
+	codeViews   []codeViewEntry
+	subagents   *subagentPanel
+	panelExpand bool // ctrl+p opens a full-height browser
+
+	// Slash-command autocomplete state.
+	suggest slashSuggest
 }
 
 // SetProgram stores the reference so off-thread code can deliver messages.

@@ -22,6 +22,10 @@ func (m *Model) View() string {
 		return "starting up…"
 	}
 
+	if m.panelExpand {
+		return m.renderExpandedPanel()
+	}
+
 	switch m.modal {
 	case modalQuestion:
 		return m.question.view(m.width, m.height)
@@ -36,40 +40,77 @@ func (m *Model) View() string {
 	// Body splits into chat on the left + optional side panels on the right.
 	sidePanels := m.renderSidePanels()
 	var body string
+	leftW := m.width
 	if sidePanels != "" {
-		leftW := m.width - lipgloss.Width(sidePanels) - 1
+		leftW = m.width - lipgloss.Width(sidePanels) - 1
 		if leftW < 40 {
 			leftW = m.width
 			sidePanels = ""
 		}
-		m.viewport.Width = leftW
-		m.rerenderViewport()
+	}
+	m.viewport.Width = leftW
+	m.rerenderViewport()
+	if sidePanels != "" {
 		body = lipgloss.JoinHorizontal(lipgloss.Top, m.viewport.View(), sidePanels)
 	} else {
-		m.viewport.Width = m.width
 		body = m.viewport.View()
 	}
+
+	// Slash-command dropdown (floats above input when `/` prefix in buffer).
+	suggest := m.renderSuggest(leftW)
 
 	// Input panel — boxed like Python's prompt_toolkit prompt.
 	inputStyle := borderStyle.Copy().BorderForeground(m.theme.Separator).Width(m.width - 2)
 	input := inputStyle.Render(m.input.View())
 	footer := m.renderFooter()
 
-	return lipgloss.JoinVertical(lipgloss.Left, header, body, input, footer)
+	parts := []string{header, body}
+	if suggest != "" {
+		parts = append(parts, suggest)
+	}
+	parts = append(parts, input, footer)
+	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
+// renderSidePanels stacks the code-activity and subagent panels into a
+// right column. Hard-capped height per panel so a long run doesn't eat
+// the chat — press Ctrl+P to open the expanded browser instead.
 func (m *Model) renderSidePanels() string {
 	cw := m.codePanelWidth()
-	h := m.viewport.Height
-	if h <= 0 {
+	totalH := m.viewport.Height
+	if totalH <= 0 || cw == 0 {
 		return ""
 	}
-	var panels []string
-	if p := m.renderCodePanel(cw, h/2); p != "" {
-		panels = append(panels, p)
+	// Count how many panels have content so we can split the available
+	// vertical space fairly.
+	showCode := len(m.codeViews) > 0
+	showSub := m.subagents != nil && len(m.subagents.Order) > 0
+	if !showCode && !showSub {
+		return ""
 	}
-	if p := m.renderSubagentPanel(cw, h/2); p != "" {
-		panels = append(panels, p)
+	// Hard ceiling — no single panel wider/taller than ~45% of viewport
+	// height. Rest is kept for chat.
+	perMax := totalH * 45 / 100
+	if perMax < 6 {
+		perMax = 6
+	}
+	split := totalH
+	if showCode && showSub {
+		split = totalH / 2
+	}
+	if split > perMax {
+		split = perMax
+	}
+	var panels []string
+	if showCode {
+		if p := m.renderCodePanel(cw, split); p != "" {
+			panels = append(panels, p)
+		}
+	}
+	if showSub {
+		if p := m.renderSubagentPanel(cw, split); p != "" {
+			panels = append(panels, p)
+		}
 	}
 	if len(panels) == 0 {
 		return ""
@@ -143,7 +184,7 @@ func (m *Model) renderHeader() string {
 func (m *Model) renderFooter() string {
 	status := m.status
 	if status == "" {
-		status = "enter send · alt+enter newline · shift+tab mode · pgup/pgdn scroll · ctrl+c quit"
+		status = "enter send · alt+enter newline · shift+tab mode · pgup/pgdn scroll · ctrl+p panels · ctrl+c quit"
 	}
 	return lipgloss.NewStyle().
 		Foreground(m.theme.Muted).

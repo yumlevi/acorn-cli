@@ -130,6 +130,22 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Expanded side-panel consumes everything — ctrl+p / esc close it.
+	if m.panelExpand {
+		switch msg.String() {
+		case "ctrl+p", "esc", "q":
+			m.panelExpand = false
+		case "ctrl+c":
+			return m, tea.Quit
+		}
+		return m, nil
+	}
+
+	// Slash autocomplete keys take priority when the dropdown is open.
+	if _, consumed := m.handleSuggestKey(msg); consumed {
+		return m, nil
+	}
+
 	switch msg.String() {
 	case "ctrl+c", "ctrl+d":
 		if m.exec != nil && m.exec.BG != nil {
@@ -187,10 +203,16 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "pgdown":
 		m.viewport.LineDown(m.viewport.Height - 2)
 		return m, nil
+	case "ctrl+p":
+		m.panelExpand = !m.panelExpand
+		return m, nil
 	}
 
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	// Re-compute slash suggestions after every keystroke that reached the
+	// textarea. Cheap lookup over a ~15-item catalog.
+	m.refreshSuggest()
 	return m, cmd
 }
 
