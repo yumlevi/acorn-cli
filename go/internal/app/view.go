@@ -35,11 +35,61 @@ func (m *Model) View() string {
 		return m.permission.view(m.width, m.height, m.theme)
 	}
 
-	header := m.renderHeader()
+	// ── Layout algorithm ─────────────────────────────────────────────
+	// Rows, top to bottom:
+	//   header    — 1 line
+	//   body      — flex: fills whatever's left
+	//   suggest   — variable: 0 when hidden, 2..N lines when visible
+	//   input     — m.input.Height() + 2 (border)
+	//   footer    — 1 line
+	// Total must equal m.height exactly, or the terminal scrolls and chat
+	// gets pushed off the top when suggest appears.
+	//
+	// Pre-compute all fixed+variable rows first, then shrink the body to
+	// consume exactly the remainder.
 
-	// Body splits into chat on the left + optional side panels on the right.
-	sidePanels := m.renderSidePanels()
-	var body string
+	header := m.renderHeader()
+	headerH := lipgloss.Height(header)
+
+	footer := m.renderFooter()
+	footerH := lipgloss.Height(footer)
+
+	// Input width reserves room for border.
+	m.input.SetWidth(m.width - 2)
+	inputBorder := borderStyle.Copy().BorderForeground(m.theme.Separator).Width(m.width - 2)
+	input := inputBorder.Render(m.input.View())
+	inputH := lipgloss.Height(input)
+
+	// Provisional leftW for suggest (actual chat width may differ when
+	// side panels show, but the dropdown floats over the chat column).
+	provLeftW := m.width
+	if side := m.renderSidePanels(); side != "" {
+		provLeftW = m.width - lipgloss.Width(side) - 1
+		if provLeftW < 40 {
+			provLeftW = m.width
+		}
+	}
+	suggest := m.renderSuggest(provLeftW)
+	suggestH := 0
+	if suggest != "" {
+		suggestH = lipgloss.Height(suggest)
+	}
+
+	bodyH := m.height - headerH - suggestH - inputH - footerH
+	if bodyH < 3 {
+		bodyH = 3
+	}
+
+	// Viewport height = body height. Side panels get the same height so
+	// they align with the chat column and never overflow.
+	m.viewport.Height = bodyH
+
+	// Side panels, now sized against the final bodyH.
+	sidePanels := ""
+	if side := m.renderSidePanelsBounded(bodyH); side != "" {
+		sidePanels = side
+	}
+
 	leftW := m.width
 	if sidePanels != "" {
 		leftW = m.width - lipgloss.Width(sidePanels) - 1
@@ -50,19 +100,13 @@ func (m *Model) View() string {
 	}
 	m.viewport.Width = leftW
 	m.rerenderViewport()
+
+	var body string
 	if sidePanels != "" {
 		body = lipgloss.JoinHorizontal(lipgloss.Top, m.viewport.View(), sidePanels)
 	} else {
 		body = m.viewport.View()
 	}
-
-	// Slash-command dropdown (floats above input when `/` prefix in buffer).
-	suggest := m.renderSuggest(leftW)
-
-	// Input panel — boxed like Python's prompt_toolkit prompt.
-	inputStyle := borderStyle.Copy().BorderForeground(m.theme.Separator).Width(m.width - 2)
-	input := inputStyle.Render(m.input.View())
-	footer := m.renderFooter()
 
 	parts := []string{header, body}
 	if suggest != "" {
@@ -72,12 +116,24 @@ func (m *Model) View() string {
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
-// renderSidePanels stacks the code-activity and subagent panels into a
-// right column. Hard-capped height per panel so a long run doesn't eat
-// the chat — press Ctrl+P to open the expanded browser instead.
+// renderSidePanels — kept for the layout pre-pass that needs to know whether
+// any side panel exists. Returns a single-line stub so the column-width
+// calc treats them as present without rendering at full height yet.
 func (m *Model) renderSidePanels() string {
+	if m.codePanelWidth() == 0 {
+		return ""
+	}
+	if len(m.codeViews) == 0 && (m.subagents == nil || len(m.subagents.Order) == 0) {
+		return ""
+	}
+	// Stub width-only; real render happens in renderSidePanelsBounded.
+	return strings.Repeat(" ", m.codePanelWidth())
+}
+
+// renderSidePanelsBounded does the actual sized render once the body
+// height is known.
+func (m *Model) renderSidePanelsBounded(totalH int) string {
 	cw := m.codePanelWidth()
-	totalH := m.viewport.Height
 	if totalH <= 0 || cw == 0 {
 		return ""
 	}
@@ -194,13 +250,11 @@ func (m *Model) renderFooter() string {
 		Render(status)
 }
 
+// layout is now a thin notify — the real layout runs in View() each
+// frame because heights depend on suggest visibility and side-panel
+// presence which can change without a window resize.
 func (m *Model) layout() {
 	m.input.SetWidth(m.width - 2)
-	inputH := m.input.Height() + 2
-	m.viewport.Height = m.height - 1 - inputH - 1
-	if m.viewport.Height < 3 {
-		m.viewport.Height = 3
-	}
 	m.rerenderViewport()
 }
 
