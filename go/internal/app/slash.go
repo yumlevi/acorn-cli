@@ -38,6 +38,9 @@ var slashCatalog = []slashEntry{
 	{"/approve-all-dangerous", "shortcut for /mode yolo"},
 	{"/bg", "background process list / run / kill"},
 	{"/update", "check/install the latest release"},
+	{"/context", "show the project context block"},
+	{"/tree", "print the project file tree"},
+	{"/init", "create ACORN.md template"},
 }
 
 // refreshSuggest recomputes matches for the current input buffer. Only

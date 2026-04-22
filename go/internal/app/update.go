@@ -309,6 +309,10 @@ func (m *Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 	if len(parts) == 0 {
 		return m, nil
 	}
+	// Registry first — phase-7 commands (/context, /tree, /init) live there.
+	if mm, c, ok := dispatchSlash(m, text); ok {
+		return mm, c
+	}
 	cmd := parts[0]
 
 	switch cmd {
@@ -738,5 +742,8 @@ func SlashHelp() string {
 		"/approve-all — shortcut for /mode auto",
 		"/approve-all-dangerous — shortcut for /mode yolo",
 		"/sessions — list saved sessions for this project",
+		"/context — show project context block (refresh: re-send next turn)",
+		"/tree [depth] — print the project file tree",
+		"/init — create ACORN.md + add .acorn/ to .gitignore",
 	}, "\n")
 }
