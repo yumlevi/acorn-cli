@@ -12,15 +12,20 @@ import (
 )
 
 // glamourCache memoizes one glamour renderer per (theme, width) pair.
-// Constructing a TermRenderer is expensive; reusing one across messages
-// keeps repaint latency down. Sync because View() can fire from goroutines.
+// Capped with a cheap LRU so a long session with many resize events
+// doesn't accumulate dozens of TermRenderer instances forever. Sync
+// because View() can fire from a different goroutine than Update.
 var (
 	glamourMu    sync.Mutex
 	glamourCache = map[string]*glamour.TermRenderer{}
+	glamourOrder []string // insertion order for LRU eviction
 )
+
+const glamourCacheMax = 6
 
 // glamourRenderer returns a renderer for the given style + word width.
 // Falls back to nil on construction failure — callers must handle that.
+// Evicts oldest entries when the cache grows past glamourCacheMax.
 func glamourRenderer(style string, width int) *glamour.TermRenderer {
 	if width < 20 {
 		width = 20
@@ -36,7 +41,6 @@ func glamourRenderer(style string, width int) *glamour.TermRenderer {
 		glamour.WithWordWrap(width),
 	)
 	if err != nil {
-		// Try the always-available auto style.
 		r, err = glamour.NewTermRenderer(
 			glamour.WithAutoStyle(),
 			glamour.WithWordWrap(width),
@@ -46,6 +50,13 @@ func glamourRenderer(style string, width int) *glamour.TermRenderer {
 		}
 	}
 	glamourCache[key] = r
+	glamourOrder = append(glamourOrder, key)
+	// Evict oldest until we're under the cap.
+	for len(glamourOrder) > glamourCacheMax {
+		old := glamourOrder[0]
+		glamourOrder = glamourOrder[1:]
+		delete(glamourCache, old)
+	}
 	return r
 }
 
@@ -59,9 +70,18 @@ func glamourStyleForTheme(t Theme) string {
 	return "dark"
 }
 
-// renderMarkdown runs the text through glamour. Returns the original
-// text if rendering fails (so we never lose content). Trims the trailing
-// newline glamour adds.
+// renderMarkdown runs text through glamour and clamps each output line
+// to `width` display cells. The clamp is belt-and-braces: glamour does
+// wrap at the width we asked, but tables, link underlines, and bullet
+// indentation can produce lines that measure a cell or two wider than
+// requested — and when that output gets wrapped AGAIN inside the
+// outer lipgloss Width(...) box the re-wrap lands at unpredictable
+// positions and eats characters from the surrounding text. Hard-
+// truncating here keeps every line ≤ width so the outer box never
+// re-wraps.
+//
+// Returns the original text unchanged if glamour fails (so we never
+// silently drop a message).
 func renderMarkdown(text string, width int, t Theme) string {
 	r := glamourRenderer(glamourStyleForTheme(t), width)
 	if r == nil {
@@ -71,7 +91,19 @@ func renderMarkdown(text string, width int, t Theme) string {
 	if err != nil {
 		return text
 	}
-	return strings.TrimRight(out, "\n")
+	out = strings.TrimRight(out, "\n")
+	// Clamp each line to width display cells. ansi.Truncate is ANSI-
+	// aware so it preserves color codes across the cut.
+	if width > 0 {
+		lines := strings.Split(out, "\n")
+		for i, ln := range lines {
+			if ansi.StringWidth(ln) > width {
+				lines[i] = ansi.Truncate(ln, width, "")
+			}
+		}
+		out = strings.Join(lines, "\n")
+	}
+	return out
 }
 
 // Module-level styles referenced by modal files (theme-agnostic defaults;
@@ -528,26 +560,100 @@ func renderMessage(c chatMsg, width int, t Theme) string {
 	return box
 }
 
-// wrapForPanel performs a simple soft-wrap. lipgloss can't do grapheme-aware
-// wrapping on its own (needs reflow), so we do a minimal split here.
+// wrapForPanel soft-wraps each line to at most w display cells wide,
+// preferring word boundaries. RUNE-AWARE — cuts never land inside a
+// multi-byte UTF-8 sequence, which the previous byte-slicing version
+// was silently corrupting. That showed up as 'chars dropping mid-word'
+// in streamed agent output once the message contained em-dashes,
+// smart quotes, bullets, or box-drawing characters (think QR-code
+// responses).
+//
+// Uses ansi.StringWidth for cell counting so wide CJK / emoji behave
+// correctly. ANSI escape sequences, if any slipped in, are counted as
+// zero-width (which is correct — they don't take visual cells).
 func wrapForPanel(s string, w int) string {
 	if w <= 0 {
 		return s
 	}
 	var out []string
 	for _, line := range strings.Split(s, "\n") {
-		for len(line) > w {
-			// Try to break on a word boundary.
-			cut := w
-			if sp := strings.LastIndex(line[:w], " "); sp > w/2 {
-				cut = sp
-			}
-			out = append(out, line[:cut])
-			line = strings.TrimLeft(line[cut:], " ")
-		}
-		out = append(out, line)
+		out = append(out, wrapLine(line, w)...)
 	}
 	return strings.Join(out, "\n")
+}
+
+// wrapLine wraps a single logical line (no newlines in `s`) to at most
+// w display cells per wrapped row. Splits on spaces where possible;
+// hard-splits long runs. Returns at least one entry (possibly empty).
+func wrapLine(s string, w int) []string {
+	if s == "" {
+		return []string{""}
+	}
+	if ansi.StringWidth(s) <= w {
+		return []string{s}
+	}
+	var out []string
+	rem := s
+	for ansi.StringWidth(rem) > w {
+		// Scan rune-by-rune accumulating display width; remember the
+		// last space position to prefer a word break.
+		cellW := 0
+		lastSpace := -1
+		cut := 0 // byte index to cut at
+		for i, r := range rem {
+			rw := runeWidth(r)
+			if cellW+rw > w {
+				// We've hit the width budget. Prefer a word break if
+				// we saw a space in the second half of this slice.
+				if lastSpace > w/2 {
+					cut = lastSpace
+				} else {
+					cut = i
+				}
+				break
+			}
+			if r == ' ' {
+				lastSpace = i
+			}
+			cellW += rw
+			cut = i + utf8Len(r) // end-of-string fallback
+		}
+		if cut <= 0 {
+			cut = len(rem)
+		}
+		out = append(out, rem[:cut])
+		// Trim leading spaces on the continuation line so wrapped prose
+		// doesn't start with an awkward gap.
+		rem = strings.TrimLeft(rem[cut:], " ")
+		if rem == "" {
+			break
+		}
+	}
+	if rem != "" {
+		out = append(out, rem)
+	}
+	return out
+}
+
+// runeWidth returns the display-cell width of r. East-Asian wide + emoji
+// = 2, control chars = 0, everything else = 1. Delegates to ansi so the
+// logic matches lipgloss's width counter.
+func runeWidth(r rune) int {
+	return ansi.StringWidth(string(r))
+}
+
+// utf8Len returns the number of bytes in the UTF-8 encoding of r.
+func utf8Len(r rune) int {
+	switch {
+	case r < 0x80:
+		return 1
+	case r < 0x800:
+		return 2
+	case r < 0x10000:
+		return 3
+	default:
+		return 4
+	}
 }
 
 func short(s string) string {
