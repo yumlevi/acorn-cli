@@ -111,6 +111,47 @@ Any preference?
 	}
 }
 
+// Real captured turn where the agent used QUESTIONS: + numbered
+// items but each question had options described in prose with "or"
+// separators, no [A / B / C] brackets. Parser flagged them open-ended
+// → user had to type free answers. v0.1.16 splits the prose-or list
+// into a single-select picker.
+func TestParseQuestionsBlock_proseOrInsideQuestion(t *testing.T) {
+	in := "**QUESTIONS:**\n\n" +
+		"1. **What's the vibe?** Bold and disruptive (like a Wieden+Kennedy), clean and premium (like a Pentagram), or playful and approachable?\n\n" +
+		"2. **Target client?** Big enterprise brands, startups, or local businesses?\n"
+	qs := parseQuestionsBlock(in)
+	if len(qs) != 2 {
+		t.Fatalf("expected 2 questions, got %d: %#v", len(qs), qs)
+	}
+	if len(qs[0].Options) != 3 {
+		t.Errorf("q0: expected 3 options, got %d: %v", len(qs[0].Options), qs[0].Options)
+	}
+	if len(qs[1].Options) != 3 {
+		t.Errorf("q1: expected 3 options, got %d: %v", len(qs[1].Options), qs[1].Options)
+	}
+	for i, q := range qs {
+		if !strings.HasSuffix(q.Text, "?") {
+			t.Errorf("q%d text missing '?': %q", i, q.Text)
+		}
+	}
+}
+
+func TestSplitProseOrOptions_skipsAmbiguous(t *testing.T) {
+	// No comma → not an enumeration.
+	if _, opts := splitProseOrOptions("Should we proceed or stop?"); opts != nil {
+		t.Errorf("plain or-question should not be split: %v", opts)
+	}
+	// One option after "or" but no commas before → not enumeration.
+	if _, opts := splitProseOrOptions("Want help or should I figure it out?"); opts != nil {
+		t.Errorf("two-only without commas should not be split: %v", opts)
+	}
+	// Long-sentence option → reject.
+	if _, opts := splitProseOrOptions("X? A short option, or a really long option that is definitely a complete sentence and probably descriptive prose rather than an actual choice the user should pick from a list?"); opts != nil {
+		t.Errorf("sentence-y option should not be split: %v", opts)
+	}
+}
+
 func TestParseQuestionsBlock_proseSingleAndMulti(t *testing.T) {
 	in := `QUESTIONS:
 1. Framework? [React / Vue / Svelte]

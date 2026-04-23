@@ -185,6 +185,15 @@ func parseMarkedQuestions(text string) []question {
 			q.Options = opts
 		} else {
 			q.Text = stripMarkdownDecor(strings.TrimRight(raw, "?") + "?")
+			// Best-effort: agents commonly emit "Lead? Opt1, Opt2, or
+			// Opt3?" inside an open-ended question instead of using
+			// the [A / B / C] bracket form. Try to detect the pattern
+			// and synthesize a single-select. Conservative — only
+			// fires when there's a clean comma-and-or split.
+			if lead, opts := splitProseOrOptions(q.Text); len(opts) >= 2 {
+				q.Text = lead
+				q.Options = opts
+			}
 		}
 		qs = append(qs, q)
 	}
@@ -324,6 +333,105 @@ func extractJSONArray(body string) string {
 		}
 	}
 	return ""
+}
+
+// splitProseOrOptions handles the case where an agent emits an
+// open-ended-looking question that actually has a clear discrete
+// option list embedded as comma-and-or prose. E.g.:
+//
+//	"What's the vibe? Bold and disruptive (like X), clean and premium
+//	 (like Y), or playful and approachable?"
+//
+// → lead "What's the vibe?", opts ["Bold and disruptive (like X)",
+//   "clean and premium (like Y)", "playful and approachable"]
+//
+// Returns ("", nil) when the input doesn't look like the pattern —
+// keeping the question open-ended rather than mis-firing on prose
+// that happens to contain "or".
+//
+// Heuristics for "looks like the pattern":
+//   - Question text has at least one '?' followed by more text
+//   - The trailing chunk has commas AND a final " or " (or " or, ")
+//   - The split produces 2-6 reasonably-short options
+//   - No option is a complete sentence (>120 chars / contains '?'
+//     before its end)
+func splitProseOrOptions(text string) (string, []string) {
+	// Find FIRST '?' — that ends the question lead.
+	qIdx := strings.Index(text, "?")
+	if qIdx < 0 || qIdx == len(text)-1 {
+		return "", nil
+	}
+	lead := strings.TrimSpace(text[:qIdx+1])
+	tail := strings.TrimSpace(text[qIdx+1:])
+	tail = strings.TrimRight(tail, "?.!  ")
+	if tail == "" || !strings.Contains(tail, ",") || !regexp.MustCompile(`(?i)\bor\b`).MatchString(tail) {
+		return "", nil
+	}
+
+	// Find the last " or " (case-insensitive) — splits "list item, or
+	// final item" cleanly.
+	lowerTail := strings.ToLower(tail)
+	lastOrIdx := strings.LastIndex(lowerTail, " or ")
+	if lastOrIdx <= 0 {
+		// Try the comma-or pattern too: ", or "
+		lastOrIdx = strings.LastIndex(lowerTail, ", or ")
+		if lastOrIdx <= 0 {
+			return "", nil
+		}
+		lastOrIdx++ // step past the leading comma
+	}
+	lastOpt := strings.TrimSpace(tail[lastOrIdx+len(" or "):])
+	beforeOr := tail[:lastOrIdx]
+	beforeOr = strings.TrimRight(beforeOr, ", ")
+
+	// Split everything before the last "or" on commas. Be robust to
+	// commas inside parentheses (like "(like Wieden+Kennedy, Kim)" —
+	// rare but real).
+	var others []string
+	depth := 0
+	start := 0
+	for i := 0; i < len(beforeOr); i++ {
+		switch beforeOr[i] {
+		case '(', '[':
+			depth++
+		case ')', ']':
+			if depth > 0 {
+				depth--
+			}
+		case ',':
+			if depth == 0 {
+				others = append(others, strings.TrimSpace(beforeOr[start:i]))
+				start = i + 1
+			}
+		}
+	}
+	if start < len(beforeOr) {
+		others = append(others, strings.TrimSpace(beforeOr[start:]))
+	}
+	others = append(others, lastOpt)
+
+	// Filter empties + sanity-check.
+	var opts []string
+	for _, o := range others {
+		o = stripMarkdownDecor(strings.TrimSpace(o))
+		if o == "" {
+			continue
+		}
+		// Reject "options" that look like a full sentence or are
+		// implausibly long — those are probably descriptive text
+		// the model added, not enumerated choices.
+		if len(o) > 120 {
+			return "", nil
+		}
+		if strings.Count(o, "?") > 0 {
+			return "", nil
+		}
+		opts = append(opts, o)
+	}
+	if len(opts) < 2 || len(opts) > 6 {
+		return "", nil
+	}
+	return lead, opts
 }
 
 // detectInlineOptions catches the common case where the agent emits
