@@ -317,14 +317,21 @@ func (m *Model) toolCmd() tea.Cmd {
 		// Ack immediately.
 		_ = m.client.Send(map[string]any{"type": "tool:ack", "id": req.ID})
 
-		result, claimed := m.exec.Execute(req.Name, req.Input)
-		if claimed {
-			_ = m.client.Send(map[string]any{
-				"type":   "tool:result",
-				"id":     req.ID,
-				"result": result,
-			})
-		}
+		result, _ := m.exec.Execute(req.Name, req.Input)
+		// ALWAYS reply with tool:result — even for server-side tools. The
+		// server treats a `null` result as "client declined, please run
+		// this yourself." Without the reply, the server hangs waiting on
+		// the request and the agent times out after a few minutes
+		// (visible to the user as web_search / graph_query / etc.
+		// stalling for ~3 minutes before failing). This matches
+		// acorn/connection.py:_handle_tool_request which sends
+		// tool:result with result=None when the local executor returns
+		// None.
+		_ = m.client.Send(map[string]any{
+			"type":   "tool:result",
+			"id":     req.ID,
+			"result": result,
+		})
 		return toolHandledMsg{name: req.Name}
 	}
 }
