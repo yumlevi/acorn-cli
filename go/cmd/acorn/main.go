@@ -16,7 +16,10 @@ import (
 	"github.com/yumlevi/acorn-cli/go/internal/sessionlog"
 )
 
-var version = "0.1.0"
+// version is overrideable at link time:
+//   go build -ldflags "-X main.version=v0.1.1" ./cmd/acorn
+// Falls back to the in-source default for plain `go build`.
+var version = "v0.1.1"
 
 func main() {
 	var (
@@ -35,6 +38,7 @@ func main() {
 		fmt.Printf("acorn %s (go port)\n", version)
 		return
 	}
+	app.SetVersion(version)
 
 	cwd, err := os.Getwd()
 	if err != nil {

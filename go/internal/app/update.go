@@ -142,7 +142,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pushChat("system", "Update check failed: "+msg.Err)
 			return m, nil
 		}
-		m.pushChat("system", fmt.Sprintf("Latest release: %s — %s\n(run /update install to replace this binary)", msg.Version, msg.URL))
+		switch {
+		case versionLE(msg.Version, Version):
+			m.pushChat("system", fmt.Sprintf("You're on %s — that's the latest release.", Version))
+		default:
+			m.pushChat("system", fmt.Sprintf("Update available: %s → %s\n%s\n(run /update install to upgrade in place)",
+				Version, msg.Version, msg.URL))
+		}
 		return m, nil
 
 	case updateInstallResult:
