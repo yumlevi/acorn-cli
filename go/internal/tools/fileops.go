@@ -17,6 +17,14 @@ import (
 // ResolvePath enforces the cwd sandbox — tools may only touch paths inside
 // the current working directory. Matches acorn/tools/file_ops.py:_resolve.
 func ResolvePath(raw, cwd string) (string, error) {
+	return ResolvePathScoped(raw, cwd, "")
+}
+
+// ResolvePathScoped is the scope-aware variant. scope == "expanded"
+// skips the cwd containment check entirely — the user explicitly opted
+// into broader access via /scope. Empty scope or "strict" enforces the
+// containment as before.
+func ResolvePathScoped(raw, cwd, scope string) (string, error) {
 	if raw == "" {
 		return "", errors.New("path is required")
 	}
@@ -26,17 +34,22 @@ func ResolvePath(raw, cwd string) (string, error) {
 	} else {
 		resolved = filepath.Clean(filepath.Join(cwd, raw))
 	}
+	if scope == "expanded" {
+		return resolved, nil
+	}
 	absCwd := filepath.Clean(cwd)
 	if resolved != absCwd && !strings.HasPrefix(resolved, absCwd+string(os.PathSeparator)) {
-		return "", fmt.Errorf("path %s is outside the working directory %s", resolved, cwd)
+		return "", fmt.Errorf("path %s is outside the working directory %s (use /scope expanded to broaden)", resolved, cwd)
 	}
 	return resolved, nil
 }
 
 // ReadFile implements the read_file tool. Input keys: path, offset, limit.
-func ReadFile(input map[string]any, cwd string) any {
+// scope governs sandboxing — empty/"strict" enforces cwd containment,
+// "expanded" allows any absolute path.
+func ReadFile(input map[string]any, cwd, scope string) any {
 	pathRaw, _ := input["path"].(string)
-	p, err := ResolvePath(pathRaw, cwd)
+	p, err := ResolvePathScoped(pathRaw, cwd, scope)
 	if err != nil {
 		return map[string]string{"error": err.Error()}
 	}
@@ -81,10 +94,10 @@ func ReadFile(input map[string]any, cwd string) any {
 }
 
 // WriteFile implements the write_file tool. Input: path, content.
-func WriteFile(input map[string]any, cwd string) any {
+func WriteFile(input map[string]any, cwd, scope string) any {
 	pathRaw, _ := input["path"].(string)
 	content, _ := input["content"].(string)
-	p, err := ResolvePath(pathRaw, cwd)
+	p, err := ResolvePathScoped(pathRaw, cwd, scope)
 	if err != nil {
 		return map[string]string{"error": err.Error()}
 	}
@@ -99,9 +112,9 @@ func WriteFile(input map[string]any, cwd string) any {
 
 // EditFile implements the edit_file tool. Input: path, old_string (or
 // old_text), new_string (or new_text), replace_all?.
-func EditFile(input map[string]any, cwd string) any {
+func EditFile(input map[string]any, cwd, scope string) any {
 	pathRaw, _ := input["path"].(string)
-	p, err := ResolvePath(pathRaw, cwd)
+	p, err := ResolvePathScoped(pathRaw, cwd, scope)
 	if err != nil {
 		return map[string]string{"error": err.Error()}
 	}

@@ -398,23 +398,23 @@ func testSandbox(m *Model) error {
 		want string
 	}{
 		{
-			op:   "read_file /etc/passwd",
-			fn:   func() any { return tools.ReadFile(map[string]any{"path": "/etc/passwd"}, m.cwd) },
+			op:   "read_file /etc/passwd (strict)",
+			fn:   func() any { return tools.ReadFile(map[string]any{"path": "/etc/passwd"}, m.cwd, "strict") },
 			want: "outside",
 		},
 		{
-			op:   "read_file ../../etc/shadow",
-			fn:   func() any { return tools.ReadFile(map[string]any{"path": "../../etc/shadow"}, m.cwd) },
+			op:   "read_file ../../etc/shadow (strict)",
+			fn:   func() any { return tools.ReadFile(map[string]any{"path": "../../etc/shadow"}, m.cwd, "strict") },
 			want: "outside",
 		},
 		{
-			op:   "write_file /usr/bin/evil",
-			fn:   func() any { return tools.WriteFile(map[string]any{"path": "/usr/bin/evil", "content": "x"}, m.cwd) },
+			op:   "write_file /usr/bin/evil (strict)",
+			fn:   func() any { return tools.WriteFile(map[string]any{"path": "/usr/bin/evil", "content": "x"}, m.cwd, "strict") },
 			want: "outside",
 		},
 		{
-			op:   "edit_file /etc/hosts",
-			fn:   func() any { return tools.EditFile(map[string]any{"path": "/etc/hosts", "old_string": "x", "new_string": "y"}, m.cwd) },
+			op:   "edit_file /etc/hosts (strict)",
+			fn:   func() any { return tools.EditFile(map[string]any{"path": "/etc/hosts", "old_string": "x", "new_string": "y"}, m.cwd, "strict") },
 			want: "outside",
 		},
 	}

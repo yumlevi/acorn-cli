@@ -42,6 +42,7 @@ var slashCatalog = []slashEntry{
 	{"/tree", "print the project file tree"},
 	{"/init", "create ACORN.md template"},
 	{"/panel", "toggle the right-column activity panel"},
+	{"/scope", "file-op sandbox: strict (cwd) | expanded (any path)"},
 	{"/test", "run a UI / behavior test (try /test list)"},
 }
 

@@ -188,7 +188,7 @@ func (m *Model) planReviseWithFeedback(fb string) (tea.Model, tea.Cmd) {
 func (m *Model) sendChatWithMode(content, mode string) tea.Cmd {
 	var pc *proto.ProjectContext
 	if m.serverCaps.ProjectContext {
-		built := BuildProjectContext(m.cwd, mode)
+		built := BuildProjectContextWithScope(m.cwd, mode, m.scope)
 		pc = &built
 	} else if mode == "plan" {
 		// Legacy fallback: glue the prefix on like the old client did

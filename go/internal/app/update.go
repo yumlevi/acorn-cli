@@ -323,7 +323,7 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.planMode {
 				mode = "plan"
 			}
-			pc := BuildProjectContext(m.cwd, mode)
+			pc := BuildProjectContextWithScope(m.cwd, mode, m.scope)
 			projectCtx = &pc
 		} else {
 			// Legacy fallback: SPORE didn't advertise projectContext
@@ -1115,6 +1115,7 @@ func SlashHelp() string {
 		"/tree [depth] — print the project file tree",
 		"/init — create ACORN.md + add .acorn/ to .gitignore",
 		"/panel [hide|show|toggle] — toggle the right-column activity panel",
+		"/scope [strict|expanded] — file-op sandbox (strict=cwd only, expanded=any path)",
 		"/test [list|all|<name>] — exercise UI features without an agent round-trip",
 	}, "\n")
 }

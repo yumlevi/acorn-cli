@@ -22,6 +22,13 @@ import (
 // instances that advertise the projectContext capability. Old SPOREs
 // still get GatherContext glued onto content as a fallback.
 func BuildProjectContext(cwd, mode string) proto.ProjectContext {
+	return BuildProjectContextWithScope(cwd, mode, "")
+}
+
+// BuildProjectContextWithScope is the variant the /scope flow uses —
+// passes through the user's sandbox preference so SPORE can omit the
+// "all file ops sandboxed to cwd" prompt block when scope=expanded.
+func BuildProjectContextWithScope(cwd, mode, scope string) proto.ProjectContext {
 	gitRoot := findGitRoot(cwd)
 	project := filepath.Base(cwd)
 	root := cwd
@@ -33,6 +40,7 @@ func BuildProjectContext(cwd, mode string) proto.ProjectContext {
 		Cwd:     cwd,
 		Project: project,
 		Mode:    mode,
+		Scope:   scope,
 		OS:      runtime.GOOS,
 		Arch:    runtime.GOARCH,
 	}

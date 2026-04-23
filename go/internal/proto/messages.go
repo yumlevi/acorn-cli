@@ -116,6 +116,13 @@ type ProjectContext struct {
 	Mode        string   `json:"mode,omitempty"`        // "plan" | "execute" — replaces PlanPrefix glue
 	OS          string   `json:"os,omitempty"`          // runtime.GOOS
 	Arch        string   `json:"arch,omitempty"`        // runtime.GOARCH
+
+	// Scope governs file-op sandboxing. "strict" (default) locks
+	// read_file/write_file/edit_file/exec to the cwd directory tree.
+	// "expanded" tells the agent + the local executor that the user
+	// has opted in to broader access — no cwd check, no sandbox
+	// warning in the prompt. Toggled via /scope.
+	Scope string `json:"scope,omitempty"` // "strict" | "expanded"
 }
 
 // ServerCapabilities — SPORE advertises feature support on connection.

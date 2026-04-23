@@ -81,6 +81,10 @@ type Executor struct {
 	CWD        string
 	LogDir     string
 	Delegation DelegationMode
+	// Scope mirrors Model.scope — "" / "strict" enforces the cwd
+	// sandbox in fileops; "expanded" lifts it. Set by app/update.go
+	// whenever /scope changes.
+	Scope      string
 	Hooks      Hooks
 	BG         *bg.Manager
 
@@ -151,7 +155,7 @@ func (e *Executor) Execute(name string, inputRaw json.RawMessage) (result any, c
 
 	switch name {
 	case "read_file":
-		r := ReadFile(input, e.CWD)
+		r := ReadFile(input, e.CWD, e.Scope)
 		if e.Hooks.OnCodeView != nil {
 			if m, ok := r.(map[string]any); ok {
 				if content, ok := m["content"].(string); ok {
@@ -162,7 +166,7 @@ func (e *Executor) Execute(name string, inputRaw json.RawMessage) (result any, c
 		return r, true
 	case "write_file":
 		content := asString(input["content"], "")
-		r := WriteFile(input, e.CWD)
+		r := WriteFile(input, e.CWD, e.Scope)
 		if e.Hooks.OnCodeView != nil {
 			if m, ok := r.(map[string]any); ok && m["ok"] == true {
 				e.Hooks.OnCodeView(asString(input["path"], ""), content, true)
@@ -170,7 +174,7 @@ func (e *Executor) Execute(name string, inputRaw json.RawMessage) (result any, c
 		}
 		return r, true
 	case "edit_file":
-		r := EditFile(input, e.CWD)
+		r := EditFile(input, e.CWD, e.Scope)
 		if e.Hooks.OnCodeDiff != nil {
 			if m, ok := r.(map[string]any); ok && m["ok"] == true {
 				e.Hooks.OnCodeDiff(

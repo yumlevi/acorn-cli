@@ -207,6 +207,49 @@ func treeString(root string, maxDepth, maxEntries int) string {
 	return b.String()
 }
 
+// cmdScope toggles the file-op sandbox.
+//
+//	/scope                show current
+//	/scope strict         lock file ops to cwd (default)
+//	/scope expanded       allow file ops anywhere on the user's machine
+//
+// "Expanded" turns off both acorn's local cwd-containment check (in
+// tools/fileops.go:ResolvePathScoped) AND the "sandboxed to cwd"
+// instruction the agent sees in the system prompt. Use when you want
+// the agent to read/write outside the project root — e.g., shared
+// dotfiles, a sibling repo, your home directory.
+func cmdScope(m *Model, args []string) (tea.Model, tea.Cmd) {
+	arg := ""
+	if len(args) > 0 {
+		arg = strings.ToLower(args[0])
+	}
+	current := m.scope
+	if current == "" {
+		current = "strict"
+	}
+	switch arg {
+	case "":
+		m.pushChat("system", "Scope is currently "+current+". Use /scope strict | /scope expanded.")
+		return m, nil
+	case "strict", "lock", "lockdown":
+		m.scope = "strict"
+	case "expanded", "expand", "open", "broad", "wide":
+		m.scope = "expanded"
+	default:
+		m.pushChat("system", "Usage: /scope [strict|expanded]")
+		return m, nil
+	}
+	if m.exec != nil {
+		m.exec.Scope = m.scope
+	}
+	if m.scope == "expanded" {
+		m.pushChat("system", "Scope → expanded — file ops can touch ANY path on this machine. Use /scope strict to re-lock.")
+	} else {
+		m.pushChat("system", "Scope → strict — file ops sandboxed to "+m.cwd)
+	}
+	return m, nil
+}
+
 // cmdPanel toggles (or explicitly sets) the right-column activity panel.
 // Usage: /panel            (toggle)
 //        /panel hide|off   (force hidden)
@@ -263,5 +306,10 @@ func init() {
 		Name:    "/panel",
 		Help:    "Toggle the right-column activity panel (hide|show|toggle)",
 		Handler: cmdPanel,
+	})
+	register(&slashCmd{
+		Name:    "/scope",
+		Help:    "Set file-op sandbox: strict (cwd only, default) or expanded (any path)",
+		Handler: cmdScope,
 	})
 }

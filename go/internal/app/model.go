@@ -64,6 +64,11 @@ type Model struct {
 
 	planMode     bool
 	contextSent  bool // gather_context only on first message — only used in legacy fallback path
+	// scope governs the sandbox for local file ops. "" / "strict"
+	// (default) enforces cwd-only access in tools/fileops.go and
+	// tells the agent so via the system prompt. "expanded" turns
+	// both off. Toggled with /scope.
+	scope string
 	generating   bool
 
 	// serverCaps is what SPORE told us it supports on connect. We send

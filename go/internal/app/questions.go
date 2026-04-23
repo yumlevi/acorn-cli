@@ -880,7 +880,7 @@ func (m *Model) finishQuestions() (tea.Model, tea.Cmd) {
 		if m.planMode {
 			mode = "plan"
 		}
-		built := BuildProjectContext(m.cwd, mode)
+		built := BuildProjectContextWithScope(m.cwd, mode, m.scope)
 		pc = &built
 	}
 	return m, m.sendChat(answerBody, answerBody, pc)
