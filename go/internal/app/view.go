@@ -230,6 +230,9 @@ func (m *Model) View() string {
 // any side panel exists. Returns a single-line stub so the column-width
 // calc treats them as present without rendering at full height yet.
 func (m *Model) renderSidePanels() string {
+	if m.panelHidden {
+		return ""
+	}
 	if m.codePanelWidth() == 0 {
 		return ""
 	}
@@ -245,6 +248,9 @@ func (m *Model) renderSidePanels() string {
 // active panel takes all of totalH; two panels split it evenly (with
 // the bottom one absorbing any odd remainder so totals match exactly).
 func (m *Model) renderSidePanelsBounded(totalH int) string {
+	if m.panelHidden {
+		return ""
+	}
 	cw := m.codePanelWidth()
 	if totalH <= 0 || cw == 0 {
 		return ""

@@ -1117,5 +1117,6 @@ func SlashHelp() string {
 		"/context — show project context block (refresh: re-send next turn)",
 		"/tree [depth] — print the project file tree",
 		"/init — create ACORN.md + add .acorn/ to .gitignore",
+		"/panel [hide|show|toggle] — toggle the right-column activity panel",
 	}, "\n")
 }

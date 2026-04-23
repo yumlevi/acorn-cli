@@ -41,6 +41,7 @@ var slashCatalog = []slashEntry{
 	{"/context", "show the project context block"},
 	{"/tree", "print the project file tree"},
 	{"/init", "create ACORN.md template"},
+	{"/panel", "toggle the right-column activity panel"},
 }
 
 // refreshSuggest recomputes matches for the current input buffer. Only

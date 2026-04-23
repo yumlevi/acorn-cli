@@ -102,6 +102,7 @@ type Model struct {
 	panelExpand  bool               // ctrl+p opens a full-height browser
 	panelView    viewport.Model     // scrollable viewport for the expanded panel
 	panelViewInit bool
+	panelHidden  bool               // /panel hide — suppress the right-column activity panel entirely
 
 	// Slash-command autocomplete state.
 	suggest slashSuggest

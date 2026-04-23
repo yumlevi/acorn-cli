@@ -207,6 +207,42 @@ func treeString(root string, maxDepth, maxEntries int) string {
 	return b.String()
 }
 
+// cmdPanel toggles (or explicitly sets) the right-column activity panel.
+// Usage: /panel            (toggle)
+//        /panel hide|off   (force hidden)
+//        /panel show|on    (force visible)
+// When hidden the chat area reclaims the full terminal width — useful
+// on narrow windows or when the panel's contents aren't interesting
+// this session.
+func cmdPanel(m *Model, args []string) (tea.Model, tea.Cmd) {
+	arg := ""
+	if len(args) > 0 {
+		arg = strings.ToLower(args[0])
+	}
+	switch arg {
+	case "hide", "off", "close", "0":
+		m.panelHidden = true
+	case "show", "on", "open", "1":
+		m.panelHidden = false
+	case "", "toggle":
+		m.panelHidden = !m.panelHidden
+	default:
+		m.pushChat("system", "Usage: /panel [hide|show|toggle]")
+		return m, nil
+	}
+	// Panel visibility changes the chat column width — force the render
+	// cache to rebuild with the new innerW.
+	m.historyDirty = true
+	m.historyWidth = -1
+	m.rerenderViewport()
+	state := "visible"
+	if m.panelHidden {
+		state = "hidden"
+	}
+	m.pushChat("system", "Activity panel → "+state)
+	return m, nil
+}
+
 func init() {
 	register(&slashCmd{
 		Name:    "/context",
@@ -222,5 +258,10 @@ func init() {
 		Name:    "/init",
 		Help:    "Create ACORN.md template + add .acorn/ to .gitignore",
 		Handler: cmdInit,
+	})
+	register(&slashCmd{
+		Name:    "/panel",
+		Help:    "Toggle the right-column activity panel (hide|show|toggle)",
+		Handler: cmdPanel,
 	})
 }
