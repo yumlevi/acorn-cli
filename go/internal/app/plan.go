@@ -9,6 +9,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/yumlevi/acorn-cli/go/internal/proto"
 )
 
 type planModal struct {
@@ -153,7 +155,14 @@ func (m *Model) planExecute(text string) (tea.Model, tea.Cmd) {
 	m.pushChat("system", "▶ Executing plan…")
 	m.generating = true
 	m.status = "waiting…"
-	return m, m.sendChatMessage(PlanExecuteMsg)
+	// Use sendChat (not the old raw sendChatMessage) so projectContext
+	// flows on this turn with mode='execute'. Without it the system
+	// prompt loses the Project Context section AND the plan-mode block,
+	// AND the server can't tell what mode we're in for the turn that's
+	// about to actually do the writes. With it, the agent sees a fresh
+	// system prompt where the plan-mode rules are gone and the regular
+	// tool set (write_file, edit_file, exec) is unrestricted.
+	return m, m.sendChatWithMode(PlanExecuteMsg, "execute")
 }
 
 func (m *Model) planReviseWithFeedback(fb string) (tea.Model, tea.Cmd) {
@@ -167,24 +176,26 @@ func (m *Model) planReviseWithFeedback(fb string) (tea.Model, tea.Cmd) {
 	m.generating = true
 	m.status = "waiting…"
 	m.Broadcast("plan:decided", map[string]any{"action": "revise", "feedback": fb})
-	return m, m.sendChatMessage("[PLAN FEEDBACK: Revise the plan. Stay in plan mode.]\n\n" + fb)
+	// Stay in plan mode — projectContext.mode='plan' so the system
+	// prompt keeps emitting the plan-mode block on the revise turn.
+	return m, m.sendChatWithMode("[PLAN FEEDBACK: Revise the plan. Stay in plan mode.]\n\n"+fb, "plan")
 }
 
-// sendChatMessage lets plan+ask_user flows send arbitrary content.
-func (m *Model) sendChatMessage(content string) tea.Cmd {
-	return func() tea.Msg {
-		err := m.client.Send(map[string]any{
-			"type":      "chat",
-			"sessionId": m.sess,
-			"content":   content,
-			"userName":  m.cfg.Connection.User,
-			"cwd":       m.cwd,
-		})
-		if err != nil {
-			return connErrorMsg{err: err.Error()}
-		}
-		return nil
+// sendChatWithMode is the plan-flow equivalent of update.go's enter
+// path — builds the structured projectContext with an explicit mode
+// override (execute / plan) and sends through the same sendChat
+// pipeline so capability detection + glue fallback both still work.
+func (m *Model) sendChatWithMode(content, mode string) tea.Cmd {
+	var pc *proto.ProjectContext
+	if m.serverCaps.ProjectContext {
+		built := BuildProjectContext(m.cwd, mode)
+		pc = &built
+	} else if mode == "plan" {
+		// Legacy fallback: glue the prefix on like the old client did
+		// when we don't have the structured channel.
+		content = PlanPrefix + content
 	}
+	return m.sendChat(content, content, pc)
 }
 
 // savePlan mirrors acorn/cli.py:_save_plan — writes the plan to
