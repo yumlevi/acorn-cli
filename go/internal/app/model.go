@@ -170,6 +170,16 @@ func New(cfg *config.Config, cwd, sess string, planMode, isContinue bool) *Model
 	ta.Placeholder = "type a message · /help for commands · Shift+Tab toggles plan mode"
 	ta.SetHeight(3)
 	ta.ShowLineNumbers = false
+	// Defaults from bubbles/textarea cap each line at 500 columns and
+	// the buffer at 99 rows. Both are wrong for an agent prompt — pasting
+	// a long URL (oauth callbacks, GitHub raw links with tokens) or a
+	// stack trace easily blows past 500 cols, and a multi-paragraph
+	// message blows past 99 rows. CharLimit is already 0 (unlimited)
+	// by default; set MaxWidth and MaxHeight to 0 to remove the per-line
+	// and total-rows caps too.
+	ta.CharLimit = 0
+	ta.MaxWidth = 0
+	ta.MaxHeight = 0
 	ta.Focus()
 
 	vp := viewport.New(0, 0)
