@@ -242,9 +242,7 @@ func (m *Model) updateModal(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case toolHandledMsg:
 		return m, m.toolCmd()
 	case tea.WindowSizeMsg:
-		m.width, m.height = v.Width, v.Height
-		m.layout()
-		return m, nil
+		return m.handleResize(v.Width, v.Height)
 	case connOpenMsg, connErrorMsg, connClosedMsg:
 		// surface as regular state changes even under modal
 	}

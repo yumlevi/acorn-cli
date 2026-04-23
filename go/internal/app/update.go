@@ -69,9 +69,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width, m.height = msg.Width, msg.Height
-		m.layout()
-		return m, nil
+		return m.handleResize(msg.Width, msg.Height)
 
 	case tea.KeyMsg:
 		return m.updateKey(msg)
@@ -348,6 +346,31 @@ func (m *Model) handleHistoryNav(dir int) bool {
 	m.input.SetValue(m.cmdHistory[m.histIdx])
 	m.input.CursorEnd()
 	return true
+}
+
+// handleResize is the single source of truth for terminal-size changes.
+// Every cached/lazy widget that depends on dimensions is force-reset
+// here so the next View() rebuilds at the new size, and a ClearScreen
+// is queued so the alt-screen buffer doesn't keep stale glyphs from a
+// shrink resize.
+func (m *Model) handleResize(w, h int) (tea.Model, tea.Cmd) {
+	m.width, m.height = w, h
+	// Force the chat-history cache to rebuild at the new width, even if
+	// viewport.Width happens to equal historyWidth (it shouldn't, but the
+	// belt-and-braces protects against rounding edge cases when side
+	// panels appear/disappear at the resize boundary).
+	m.historyDirty = true
+	m.historyWidth = -1
+	m.input.SetWidth(w - 2)
+	// Discard the stateful overlay viewports — they'll re-init at the
+	// new innerW/innerH on next View(). Cheaper than trying to keep
+	// scroll position consistent across a resize.
+	m.panelViewInit = false
+	m.outputLogInit = false
+	// One re-render here so View() doesn't have to figure out two
+	// invalidations in a row.
+	m.rerenderViewport()
+	return m, tea.ClearScreen
 }
 
 func (m *Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
