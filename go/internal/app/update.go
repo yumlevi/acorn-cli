@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"golang.org/x/term"
 
+	"github.com/yumlevi/acorn-cli/go/internal/config"
 	"github.com/yumlevi/acorn-cli/go/internal/conn"
 	"github.com/yumlevi/acorn-cli/go/internal/proto"
 	"github.com/yumlevi/acorn-cli/go/internal/sessionlog"
@@ -579,10 +580,20 @@ func (m *Model) handleSlashCommand(text string) (tea.Model, tea.Cmd) {
 	case "/theme":
 		if len(parts) >= 2 {
 			m.theme = themeForName(parts[1])
-			m.pushChat("system", "Theme → "+m.theme.Name)
+			// Persist so the next `acorn` launch comes up in the
+			// same theme. Update the in-memory cfg first then write
+			// the global config.toml. Save errors aren't fatal —
+			// the theme still applies for this session.
+			m.cfg.Display.Theme = m.theme.Name
+			if err := config.Save(m.cfg); err != nil {
+				m.pushChat("system", "Theme → "+m.theme.Name+"  (save failed: "+err.Error()+")")
+			} else {
+				m.pushChat("system", "Theme → "+m.theme.Name+"  (saved)")
+			}
+			m.historyDirty = true
 			m.rerenderViewport()
 		} else {
-			m.pushChat("system", "Themes: "+strings.Join(ThemeNames(), ", "))
+			m.pushChat("system", "Current: "+m.theme.Name+"\nAvailable: "+strings.Join(ThemeNames(), ", "))
 		}
 	case "/mode":
 		if len(parts) < 2 {
