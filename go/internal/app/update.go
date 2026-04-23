@@ -295,7 +295,7 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.generating = true
 		m.status = "waiting…"
 		m.thinkingTokens = 0
-		return m, tea.Batch(m.sendChat(content), spinnerTickCmd())
+		return m, tea.Batch(m.sendChat(content, text), spinnerTickCmd())
 
 	case "pgup":
 		m.viewport.LineUp(m.viewport.Height - 2)

@@ -393,7 +393,7 @@ func (m *Model) finishQuestions() (tea.Model, tea.Cmd) {
 	m.status = "waiting…"
 	// Dismiss mobile question sheet.
 	m.Broadcast("interactive:resolved", map[string]any{"kind": "questions"})
-	return m, m.sendChat(answerBody)
+	return m, m.sendChat(answerBody, answerBody)
 }
 
 // itoa avoids importing strconv for small ints in hot view paths.

@@ -434,16 +434,25 @@ func (m *Model) Broadcast(msgType string, kv map[string]any) {
 }
 
 // sendChat wraps a chat message with session metadata.
-func (m *Model) sendChat(content string) tea.Cmd {
+//
+// displayText is the user's clean message before context/plan-prefix
+// is glued on. The server forwards displayText to observers (mobile
+// app, second tab) so they see what the user actually typed instead
+// of the full context-stuffed payload. Matches Python's
+// chat_message(..., display_text=display_text).
+func (m *Model) sendChat(content, displayText string) tea.Cmd {
 	return func() tea.Msg {
-		err := m.client.Send(map[string]any{
+		payload := map[string]any{
 			"type":      "chat",
 			"sessionId": m.sess,
 			"content":   content,
 			"userName":  m.cfg.Connection.User,
 			"cwd":       m.cwd,
-		})
-		if err != nil {
+		}
+		if displayText != "" && displayText != content {
+			payload["displayText"] = displayText
+		}
+		if err := m.client.Send(payload); err != nil {
 			return connErrorMsg{err: err.Error()}
 		}
 		return nil
