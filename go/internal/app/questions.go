@@ -112,26 +112,49 @@ func parseQuestionsBlock(text string) []question {
 		return qs
 	}
 
-	// Take the first segment that has numbered items.
-	blank := regexp.MustCompile(`\n\s*\n`)
-	var seg string
-	for _, s := range blank.Split(body, -1) {
-		if regexp.MustCompile(`(?m)^\s*\d+\.`).MatchString(s) {
-			seg = s
-			break
-		}
-	}
-	if seg == "" {
-		return nil
-	}
-
-	itemRe := regexp.MustCompile(`(?m)^\s*\d+\.\s+(.+?)$`)
+	// Walk lines manually — find every "N." anchor and treat
+	// subsequent non-blank, non-numbered lines as continuation of
+	// the same item. This handles the common agent pattern of putting
+	// a blank line BETWEEN numbered items, which the previous regex
+	// approach silently truncated to one question.
+	startRe := regexp.MustCompile(`^\s*\d+\.\s+(.+)$`)
 	multiRe := regexp.MustCompile(`\{([^}]+ / [^}]+)\}`)
 	singleRe := regexp.MustCompile(`\[([^\]]+ / [^\]]+)\]`)
 
+	var rawItems []string
+	var cur strings.Builder
+	flush := func() {
+		s := strings.TrimSpace(cur.String())
+		if s != "" {
+			rawItems = append(rawItems, s)
+		}
+		cur.Reset()
+	}
+	for _, line := range strings.Split(body, "\n") {
+		if mm := startRe.FindStringSubmatch(line); mm != nil {
+			flush()
+			cur.WriteString(mm[1])
+			continue
+		}
+		if cur.Len() == 0 {
+			// Haven't seen a numbered item yet — skip prose.
+			continue
+		}
+		trim := strings.TrimSpace(line)
+		if trim == "" {
+			// Blank line — keep open in case the next non-blank is a
+			// continuation, but DON'T flush yet. If the next non-blank
+			// IS a numbered item, the startRe branch above will flush.
+			continue
+		}
+		// Continuation line of the current item.
+		cur.WriteString(" ")
+		cur.WriteString(trim)
+	}
+	flush()
+
 	var qs []question
-	for _, m := range itemRe.FindAllStringSubmatch(seg, -1) {
-		raw := strings.TrimSpace(m[1])
+	for _, raw := range rawItems {
 		var q question
 		if mm := multiRe.FindStringSubmatchIndex(raw); mm != nil {
 			opts := splitOptions(raw[mm[2]:mm[3]])
