@@ -1115,5 +1115,6 @@ func SlashHelp() string {
 		"/tree [depth] — print the project file tree",
 		"/init — create ACORN.md + add .acorn/ to .gitignore",
 		"/panel [hide|show|toggle] — toggle the right-column activity panel",
+		"/test [list|all|<name>] — exercise UI features without an agent round-trip",
 	}, "\n")
 }
