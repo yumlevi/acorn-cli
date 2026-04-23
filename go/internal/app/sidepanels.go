@@ -233,26 +233,96 @@ func renderActivityHeader(e codeViewEntry, t Theme, innerW int) string {
 }
 
 // renderActivityPreview returns 0..N indented preview lines for an
-// entry. Empty if the entry has nothing worth previewing.
+// entry. For thinking entries the full accumulated thought is soft-
+// wrapped to the column width so long sentences read naturally across
+// multiple rows — truncating them to a single clipped line (which is
+// what the old code did) made the panel nearly useless for reasoning.
 func renderActivityPreview(e codeViewEntry, t Theme, innerW int) []string {
-	if e.Preview == "" {
-		return nil
-	}
 	style := lipgloss.NewStyle().Foreground(t.Muted)
-	if e.Thinking {
-		style = style.Italic(true)
-	}
 	indent := "   "
 	maxW := innerW - len(indent)
 	if maxW < 8 {
 		return nil
 	}
-	var out []string
-	for _, ln := range strings.Split(e.Preview, "\n") {
-		if len(ln) > maxW {
-			ln = ln[:maxW-1] + "…"
+
+	var rawLines []string
+	var maxLines int
+	if e.Thinking {
+		if strings.TrimSpace(e.Content) == "" {
+			return nil
 		}
+		style = style.Italic(true)
+		// Word-wrap the full thought; take the tail so the most recent
+		// reasoning is what the user sees when the thought outgrows the
+		// visible rows.
+		rawLines = wordWrap(e.Content, maxW)
+		maxLines = 12
+	} else {
+		if e.Preview == "" {
+			return nil
+		}
+		// File previews are already per-line; just hard-clip each.
+		for _, ln := range strings.Split(e.Preview, "\n") {
+			if len(ln) > maxW {
+				ln = ln[:maxW-1] + "…"
+			}
+			rawLines = append(rawLines, ln)
+		}
+		maxLines = len(rawLines)
+	}
+	if len(rawLines) > maxLines {
+		rawLines = rawLines[len(rawLines)-maxLines:]
+	}
+	out := make([]string, 0, len(rawLines))
+	for _, ln := range rawLines {
 		out = append(out, style.Render(indent+ln))
+	}
+	return out
+}
+
+// wordWrap breaks s into lines no wider than maxW, preferring to split
+// at word boundaries. Preserves intentional newlines in s. Falls back
+// to hard splits for words that exceed maxW on their own.
+func wordWrap(s string, maxW int) []string {
+	if maxW <= 0 {
+		return []string{s}
+	}
+	var out []string
+	for _, para := range strings.Split(s, "\n") {
+		if para == "" {
+			out = append(out, "")
+			continue
+		}
+		words := strings.Fields(para)
+		if len(words) == 0 {
+			out = append(out, "")
+			continue
+		}
+		cur := ""
+		for _, w := range words {
+			// Word longer than the full row — break it hard.
+			for len(w) > maxW {
+				if cur != "" {
+					out = append(out, cur)
+					cur = ""
+				}
+				out = append(out, w[:maxW])
+				w = w[maxW:]
+			}
+			if cur == "" {
+				cur = w
+				continue
+			}
+			if len(cur)+1+len(w) <= maxW {
+				cur += " " + w
+				continue
+			}
+			out = append(out, cur)
+			cur = w
+		}
+		if cur != "" {
+			out = append(out, cur)
+		}
 	}
 	return out
 }
