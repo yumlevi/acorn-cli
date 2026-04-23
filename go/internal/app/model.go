@@ -181,6 +181,13 @@ func New(cfg *config.Config, cwd, sess string, planMode, isContinue bool) *Model
 	ta.CharLimit = 0
 	ta.MaxWidth = 0
 	ta.MaxHeight = 0
+	// We intercept plain 'enter' in updateKey to send the message, which
+	// means textarea never sees it. To keep the multi-line-draft path
+	// working we remap InsertNewline to 'alt+enter' (the binding
+	// we advertise in the placeholder + footer). 'ctrl+j' kept as a
+	// backup in case the terminal eats alt-combos — some Windows
+	// consoles swallow Alt meta keys.
+	ta.KeyMap.InsertNewline.SetKeys("alt+enter", "ctrl+j")
 	ta.Focus()
 
 	vp := viewport.New(0, 0)

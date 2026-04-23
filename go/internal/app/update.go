@@ -292,11 +292,8 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "enter":
-		if msg.Alt {
-			var cmd tea.Cmd
-			m.input, cmd = m.input.Update(msg)
-			return m, cmd
-		}
+		// Alt+Enter / Ctrl+J insert a newline via textarea.KeyMap.InsertNewline
+		// (rebound in model.go:New). Plain 'enter' arrives here as send.
 		text := strings.TrimSpace(m.input.Value())
 		if text == "" {
 			return m, nil
