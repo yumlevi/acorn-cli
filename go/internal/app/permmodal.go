@@ -28,13 +28,22 @@ func (pm *permissionModal) options() []string {
 
 func (pm *permissionModal) view(w, h int, t Theme) string {
 	title := t.accent(true).Render("Tool approval")
+	border := t.Accent
 	if pm.dangerous {
 		title = lipgloss.NewStyle().Foreground(t.Error).Bold(true).Render("⚠ Dangerous tool approval")
+		border = t.Error
 	}
-	info := lipgloss.NewStyle().Foreground(t.Fg).Render(pm.name + ": " + pm.summary)
+	// Truncate summary to a single line so the inline strip stays
+	// compact — long shell commands shouldn't blow out the input slot.
+	summary := pm.summary
+	maxSum := w - len(pm.name) - 16
+	if maxSum > 24 && len(summary) > maxSum {
+		summary = summary[:maxSum-1] + "…"
+	}
+	info := lipgloss.NewStyle().Foreground(t.Fg).Render(pm.name + ": " + summary)
 	opts := pm.options()
 	var b strings.Builder
-	b.WriteString(title + "\n\n" + info + "\n\n")
+	b.WriteString(title + "  " + info + "\n")
 	for i, o := range opts {
 		if i == pm.selected {
 			b.WriteString(t.accent(true).Render(" ▸ " + o))
@@ -43,17 +52,16 @@ func (pm *permissionModal) view(w, h int, t Theme) string {
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString("\n" + t.muted().Render(" ↑↓ select · enter confirm · esc deny"))
-	boxW := w - 10
-	if boxW < 40 {
-		boxW = w - 4
-	}
-	box := borderStyle.Copy().
-		BorderForeground(t.Accent).
+	b.WriteString(t.muted().Render(" ↑↓ select · enter confirm · esc deny"))
+	// Inline render: full chat width, bordered, slots into the input
+	// position. Matches questions/plan-approval (v0.1.22) so all modals
+	// behave the same — chat history stays visible above.
+	boxW := w - 2
+	return borderStyle.Copy().
+		BorderForeground(border).
 		Width(boxW).
-		Padding(1, 2).
+		Padding(0, 1).
 		Render(b.String())
-	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, box)
 }
 
 func (m *Model) updatePermModal(km tea.KeyMsg) (tea.Model, tea.Cmd) {
