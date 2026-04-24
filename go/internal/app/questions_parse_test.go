@@ -1,184 +1,10 @@
 package app
 
-import (
-	"strings"
-	"testing"
-)
+import "testing"
 
-// Regression for the "blank lines between numbered items truncated
-// the question set to 1" bug that shipped in v0.1.11. Real assistant
-// output captured from sporebfl's session DB after the user reported
-// "didn't show me the question ui in acorn" on v0.1.12.
-func TestParseQuestionsBlock_blankLinesBetweenItems(t *testing.T) {
-	in := `Good idea. "A website about Claude" branches in a bunch of directions — a comparison tool, a fan/tribute page, a documentation hub, or something more creative.
-
-**QUESTIONS:**
-
-1. **What's the angle?** Compare Claude to other LLMs, showcase what Claude can do with demos, a creative tribute/portrait, or document its history and capabilities?
-
-2. **What's the tone?** Playful and fan-like, clean and editorial (like a product page), or technical and informational?
-
-3. **Any interactive features?** Live chat demo, prompt playground, model comparison table, or static content only?
-`
-	qs := parseQuestionsBlock(in)
-	if len(qs) != 3 {
-		t.Fatalf("expected 3 questions, got %d: %#v", len(qs), qs)
-	}
-	if qs[0].Multi || qs[1].Multi || qs[2].Multi {
-		t.Errorf("none of these should be multi-select")
-	}
-	for i, q := range qs {
-		if q.Text == "" {
-			t.Errorf("question %d has empty text", i)
-		}
-	}
-}
-
-func TestParseQuestionsBlock_jsonFenced(t *testing.T) {
-	in := "let me know:\n\nQUESTIONS:\n```json\n[\n  {\"text\": \"Framework?\", \"type\": \"single\", \"options\": [\"React\", \"Vue\"]},\n  {\"text\": \"Features?\", \"type\": \"multi\", \"options\": [\"Auth\", \"DB\"]},\n  {\"text\": \"Project name?\", \"type\": \"open\"}\n]\n```\n"
-	qs := parseQuestionsBlock(in)
-	if len(qs) != 3 {
-		t.Fatalf("expected 3 questions, got %d: %#v", len(qs), qs)
-	}
-	if qs[0].Multi {
-		t.Errorf("q0 should be single-select")
-	}
-	if !qs[1].Multi {
-		t.Errorf("q1 should be multi-select")
-	}
-	if len(qs[2].Options) != 0 {
-		t.Errorf("q2 should be open-ended")
-	}
-}
-
-// Real captured turn where the agent gave up on QUESTIONS: and just
-// wrote prose options with **Option A** / **Option B** / **Option C**
-// ending in "Which one? Or mix two together?". Parser fallback should
-// synthesize a picker.
-func TestParseQuestionsBlock_inlineOptionsFallback(t *testing.T) {
-	in := `We've danced this twice already — let me stop asking and just propose something.
-
-**Option A: "Good Dogs"** — Single-page editorial, warm palette, 6–8 breeds with personality blurbs, scroll-triggered reveals. Like the bridges site but fluffier. Static, no API calls.
-
-**Option B: "Should You Get a Dog?"** — Interactive personality quiz: asks about your lifestyle, living situation, activity level → recommends a breed. Fun, shareable, still static data.
-
-**Option C: "Dogepedia"** — Filterable breed grid with search, size filters, temperament tags. Small vanilla JS for interactivity. Good if you want a mini-app feel.
-
-All three are single-page, no build step, served from ` + "`/mnt/user/appdata/anima/test`" + `.
-
-**Which one?** Or mix two together?
-`
-	qs := parseQuestionsBlock(in)
-	if len(qs) != 1 {
-		t.Fatalf("expected 1 synthesized question, got %d: %#v", len(qs), qs)
-	}
-	if len(qs[0].Options) < 3 {
-		t.Errorf("expected ≥3 options, got %d: %v", len(qs[0].Options), qs[0].Options)
-	}
-}
-
-// Picker title should reuse the agent's actual ask, not the
-// generic "Which?". Real captured turn from the football case.
-func TestParseQuestionsBlock_inlineLeadQuestionText(t *testing.T) {
-	in := `"Football game website" branches hard. ...
-
-Which direction?
-
-1. Live Scores + Standings — Real-time match data, league tables, stats. Needs a football API.
-2. Fantasy Football Dashboard — Manage squad, track points, compare players. Static or API-backed.
-3. Retro Penalty-Kick / Arcade Game — Canvas-based mini-game, immediate fun, pure frontend.
-4. Team/Player Encyclopedia — Editorial static site, histories, iconic moments, stats.
-5. World Cup / Tournament Tracker — Bracket visualization, fixtures, countdowns.
-
-Any preference?
-`
-	qs := parseQuestionsBlock(in)
-	if len(qs) != 1 {
-		t.Fatalf("expected 1 synthesized question, got %d: %#v", len(qs), qs)
-	}
-	if qs[0].Text != "Which direction?" {
-		t.Errorf("expected lead 'Which direction?', got %q", qs[0].Text)
-	}
-	if len(qs[0].Options) != 5 {
-		t.Errorf("expected 5 options, got %d: %v", len(qs[0].Options), qs[0].Options)
-	}
-}
-
-// "Which direction?" + numbered options + "Any preference?" — the
-// other variant the user hit. No "Option N" prefix, no QUESTIONS:
-// marker, just a numbered list with a closing question.
-func TestParseQuestionsBlock_inlineOptionsNumbered(t *testing.T) {
-	in := `Baseball covers a lot of ground. A retro-themed baseball card browser, a live MLB scoreboard with stats, a fantasy league dashboard, or a sabermetrics playground — all very different builds.
-
-Which direction?
-
-1. MLB Scoreboard + Standings — Live scores, team records, player stats. Needs an API (newsapi, ESPN, or MLB's free GUMBO endpoint).
-2. Baseball History Encyclopedia — Iconic players, teams, moments — static, editorial, like the bridges/dog sites.
-3. Fantasy Dashboard — Track your roster, compare player stats, projected scoring. All static data unless you wire a real league API.
-4. Retro Baseball Card Browser — Flip cards showing player stats with vintage design. Pure front-end, no API needed.
-
-Any preference?
-`
-	qs := parseQuestionsBlock(in)
-	if len(qs) != 1 {
-		t.Fatalf("expected 1 synthesized question, got %d: %#v", len(qs), qs)
-	}
-	if len(qs[0].Options) != 4 {
-		t.Errorf("expected 4 options, got %d: %v", len(qs[0].Options), qs[0].Options)
-	}
-	// Labels should be the short part before the em-dash.
-	wantPrefix := []string{"MLB Scoreboard", "Baseball History", "Fantasy Dashboard", "Retro Baseball Card"}
-	for i, want := range wantPrefix {
-		if i >= len(qs[0].Options) {
-			break
-		}
-		if !strings.HasPrefix(qs[0].Options[i], want) {
-			t.Errorf("opt[%d] = %q, want prefix %q", i, qs[0].Options[i], want)
-		}
-	}
-}
-
-// Real captured turn where the agent used QUESTIONS: + numbered
-// items but each question had options described in prose with "or"
-// separators, no [A / B / C] brackets. Parser flagged them open-ended
-// → user had to type free answers. v0.1.16 splits the prose-or list
-// into a single-select picker.
-func TestParseQuestionsBlock_proseOrInsideQuestion(t *testing.T) {
-	in := "**QUESTIONS:**\n\n" +
-		"1. **What's the vibe?** Bold and disruptive (like a Wieden+Kennedy), clean and premium (like a Pentagram), or playful and approachable?\n\n" +
-		"2. **Target client?** Big enterprise brands, startups, or local businesses?\n"
-	qs := parseQuestionsBlock(in)
-	if len(qs) != 2 {
-		t.Fatalf("expected 2 questions, got %d: %#v", len(qs), qs)
-	}
-	if len(qs[0].Options) != 3 {
-		t.Errorf("q0: expected 3 options, got %d: %v", len(qs[0].Options), qs[0].Options)
-	}
-	if len(qs[1].Options) != 3 {
-		t.Errorf("q1: expected 3 options, got %d: %v", len(qs[1].Options), qs[1].Options)
-	}
-	for i, q := range qs {
-		if !strings.HasSuffix(q.Text, "?") {
-			t.Errorf("q%d text missing '?': %q", i, q.Text)
-		}
-	}
-}
-
-func TestSplitProseOrOptions_skipsAmbiguous(t *testing.T) {
-	// No comma → not an enumeration.
-	if _, opts := splitProseOrOptions("Should we proceed or stop?"); opts != nil {
-		t.Errorf("plain or-question should not be split: %v", opts)
-	}
-	// One option after "or" but no commas before → not enumeration.
-	if _, opts := splitProseOrOptions("Want help or should I figure it out?"); opts != nil {
-		t.Errorf("two-only without commas should not be split: %v", opts)
-	}
-	// Long-sentence option → reject.
-	if _, opts := splitProseOrOptions("X? A short option, or a really long option that is definitely a complete sentence and probably descriptive prose rather than an actual choice the user should pick from a list?"); opts != nil {
-		t.Errorf("sentence-y option should not be split: %v", opts)
-	}
-}
-
+// Standard prose form — single-select, multi-select, open-ended on
+// successive lines. The bedrock test: the agent followed the prompt
+// exactly, parser must surface 3 questions with the right shapes.
 func TestParseQuestionsBlock_proseSingleAndMulti(t *testing.T) {
 	in := `QUESTIONS:
 1. Framework? [React / Vue / Svelte]
@@ -197,5 +23,94 @@ func TestParseQuestionsBlock_proseSingleAndMulti(t *testing.T) {
 	}
 	if len(qs[2].Options) != 0 {
 		t.Errorf("q2: want open-ended")
+	}
+}
+
+// JSON-fenced form (the format the plan-mode prompt now teaches as
+// preferred). Mixed single / multi / open in a single block.
+func TestParseQuestionsBlock_jsonFenced(t *testing.T) {
+	in := "let me know:\n\nQUESTIONS:\n```json\n[\n  {\"text\": \"Framework?\", \"type\": \"single\", \"options\": [\"React\", \"Vue\"]},\n  {\"text\": \"Features?\", \"type\": \"multi\", \"options\": [\"Auth\", \"DB\"]},\n  {\"text\": \"Project name?\", \"type\": \"open\"}\n]\n```\n"
+	qs := parseQuestionsBlock(in)
+	if len(qs) != 3 {
+		t.Fatalf("expected 3 questions, got %d: %#v", len(qs), qs)
+	}
+	if qs[0].Multi {
+		t.Errorf("q0 should be single-select")
+	}
+	if !qs[1].Multi {
+		t.Errorf("q1 should be multi-select")
+	}
+	if len(qs[2].Options) != 0 {
+		t.Errorf("q2 should be open-ended")
+	}
+}
+
+// Real captured turn: agent uses **QUESTIONS:** (markdown bold marker)
+// AND puts blank lines between numbered items. The marker tolerance
+// + line-by-line continuation walk should still surface all 3.
+func TestParseQuestionsBlock_blankLinesBetweenItems(t *testing.T) {
+	in := `Good idea. "A website about Claude" branches in a bunch of directions.
+
+**QUESTIONS:**
+
+1. What's the angle? [Compare / Showcase / Tribute]
+
+2. What's the tone? [Playful / Editorial / Technical]
+
+3. Any interactive features? [Live chat / Playground / Static]
+`
+	qs := parseQuestionsBlock(in)
+	if len(qs) != 3 {
+		t.Fatalf("expected 3 questions, got %d: %#v", len(qs), qs)
+	}
+	for i, q := range qs {
+		if q.Text == "" {
+			t.Errorf("q%d empty text", i)
+		}
+		if len(q.Options) != 3 {
+			t.Errorf("q%d expected 3 opts, got %v", i, q.Options)
+		}
+	}
+}
+
+// Strictness: no QUESTIONS: marker → no picker. Don't synthesize from
+// prose, even if it looks pickable. Regression for v0.1.20 — the
+// previous detectInlineOptions / splitProseOrOptions fallbacks
+// invented wrong pickers for sentences like "Python or Go or staged
+// migration?" Documenting that intentional return-nil here.
+func TestParseQuestionsBlock_noMarkerReturnsNil(t *testing.T) {
+	in := `Two paths: refactor the Python CLI, finish the Go port, or do a staged migration. Which? Pick one and I'll plan accordingly.
+
+**Option A** — Polish Python.
+**Option B** — Finish the Go port.
+**Option C** — Staged migration.
+
+Which one?
+`
+	qs := parseQuestionsBlock(in)
+	if qs != nil {
+		t.Fatalf("no QUESTIONS: marker → expected nil, got %d questions: %#v", len(qs), qs)
+	}
+}
+
+// Open-ended question with prose "or" enumeration that USED to trip
+// splitProseOrOptions. Now: no synthesis — the question stays
+// open-ended and the user types the answer. The point is we don't
+// chop the question text.
+func TestParseQuestionsBlock_openEndedWithOrPhrasingNotSplit(t *testing.T) {
+	in := `QUESTIONS:
+1. Do you want to refactor the Python CLI or finish the Go port or a staged migration (improve Python first, then port)?
+`
+	qs := parseQuestionsBlock(in)
+	if len(qs) != 1 {
+		t.Fatalf("expected 1 question, got %d: %#v", len(qs), qs)
+	}
+	if len(qs[0].Options) != 0 {
+		t.Errorf("expected open-ended, got options: %v", qs[0].Options)
+	}
+	// Whole sentence preserved as the question text.
+	want := "Do you want to refactor the Python CLI or finish the Go port or a staged migration (improve Python first, then port)?"
+	if qs[0].Text != want {
+		t.Errorf("text mangled:\n  got:  %q\n  want: %q", qs[0].Text, want)
 	}
 }

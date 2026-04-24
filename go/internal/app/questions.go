@@ -86,26 +86,30 @@ func (m *Model) openStructuredQuestion(f proto.AskUser) {
 // prose-based question flow (mirrored from acorn/questions.py so CLI behaviour
 // matches the Python implementation).
 //
-// Falls back to detectInlineOptions when no QUESTIONS: marker is found —
-// agents sometimes bypass the marker when they decide a turn calls for
-// "just present options as prose and let the user pick". Without the
-// fallback the user sees a flat bullet list with no picker.
+// Strict by design — only the explicit QUESTIONS: marker triggers a
+// picker. Earlier versions tried to synthesize options from prose
+// (`**Option A**` blocks, "X or Y or Z?" enumerations) when the marker
+// was missing; that produced wrong pickers more often than it helped
+// (e.g. ate "Python or Go" question text and made "staged migration"
+// the only visible option). The plan-mode prompt teaches the marker
+// — rely on that.
 func parseQuestionsBlock(text string) []question {
 	if text == "" {
 		return nil
 	}
-	// Try the marker-based path first (most reliable).
-	if qs := parseMarkedQuestions(text); len(qs) > 0 {
-		return qs
-	}
-	// Fallback: agent emitted "**Option A** … **Option B** … Which one?"
-	// instead of QUESTIONS:. Synthesize a single-select picker.
-	return detectInlineOptions(text)
+	// Strict: only parse when the agent explicitly used the QUESTIONS:
+	// marker. Matches the Python parser's behavior. If the agent skipped
+	// the marker, returning nil here means "no picker" — which is the
+	// right call. Synthesizing options from prose ("**Option A**" /
+	// "or" enumerations) used to be tempting but produced wrong pickers
+	// often enough that strictness wins. The plan-mode prompt teaches
+	// the marker; rely on that, not heuristics.
+	return parseMarkedQuestions(text)
 }
 
-// parseMarkedQuestions is the original QUESTIONS:-marker path —
-// extracted out so the public entry point can also fall back to
-// detectInlineOptions when the marker is missing.
+// parseMarkedQuestions handles the QUESTIONS:-marker path. JSON-fenced
+// form first (preferred per the plan-mode prompt), then numbered prose
+// with [A / B] single-select / {A / B} multi-select brackets.
 func parseMarkedQuestions(text string) []question {
 	// Split on the QUESTIONS: marker. Accepts:
 	//   QUESTIONS:
@@ -184,16 +188,13 @@ func parseMarkedQuestions(text string) []question {
 			q.Text = stripMarkdownDecor(strings.TrimRight(strings.TrimSpace(raw[:mm[0]]), "?") + "?")
 			q.Options = opts
 		} else {
+			// Open-ended — no bracket form. Match Python: just trust
+			// the model. The previous prose-or splitter ("Opt1, Opt2,
+			// or Opt3?") fired on legit open-ended sentences and
+			// produced wrong single-select pickers (e.g. it ate the
+			// first two clauses of "Python or Go or staged migration?"
+			// as the question text). Don't synthesize options here.
 			q.Text = stripMarkdownDecor(strings.TrimRight(raw, "?") + "?")
-			// Best-effort: agents commonly emit "Lead? Opt1, Opt2, or
-			// Opt3?" inside an open-ended question instead of using
-			// the [A / B / C] bracket form. Try to detect the pattern
-			// and synthesize a single-select. Conservative — only
-			// fires when there's a clean comma-and-or split.
-			if lead, opts := splitProseOrOptions(q.Text); len(opts) >= 2 {
-				q.Text = lead
-				q.Options = opts
-			}
 		}
 		qs = append(qs, q)
 	}
@@ -333,254 +334,6 @@ func extractJSONArray(body string) string {
 		}
 	}
 	return ""
-}
-
-// splitProseOrOptions handles the case where an agent emits an
-// open-ended-looking question that actually has a clear discrete
-// option list embedded as comma-and-or prose. E.g.:
-//
-//	"What's the vibe? Bold and disruptive (like X), clean and premium
-//	 (like Y), or playful and approachable?"
-//
-// → lead "What's the vibe?", opts ["Bold and disruptive (like X)",
-//   "clean and premium (like Y)", "playful and approachable"]
-//
-// Returns ("", nil) when the input doesn't look like the pattern —
-// keeping the question open-ended rather than mis-firing on prose
-// that happens to contain "or".
-//
-// Heuristics for "looks like the pattern":
-//   - Question text has at least one '?' followed by more text
-//   - The trailing chunk has commas AND a final " or " (or " or, ")
-//   - The split produces 2-6 reasonably-short options
-//   - No option is a complete sentence (>120 chars / contains '?'
-//     before its end)
-func splitProseOrOptions(text string) (string, []string) {
-	// Find FIRST '?' — that ends the question lead.
-	qIdx := strings.Index(text, "?")
-	if qIdx < 0 || qIdx == len(text)-1 {
-		return "", nil
-	}
-	lead := strings.TrimSpace(text[:qIdx+1])
-	tail := strings.TrimSpace(text[qIdx+1:])
-	tail = strings.TrimRight(tail, "?.!  ")
-	if tail == "" || !strings.Contains(tail, ",") || !regexp.MustCompile(`(?i)\bor\b`).MatchString(tail) {
-		return "", nil
-	}
-
-	// Find the last " or " (case-insensitive) — splits "list item, or
-	// final item" cleanly.
-	lowerTail := strings.ToLower(tail)
-	lastOrIdx := strings.LastIndex(lowerTail, " or ")
-	if lastOrIdx <= 0 {
-		// Try the comma-or pattern too: ", or "
-		lastOrIdx = strings.LastIndex(lowerTail, ", or ")
-		if lastOrIdx <= 0 {
-			return "", nil
-		}
-		lastOrIdx++ // step past the leading comma
-	}
-	lastOpt := strings.TrimSpace(tail[lastOrIdx+len(" or "):])
-	beforeOr := tail[:lastOrIdx]
-	beforeOr = strings.TrimRight(beforeOr, ", ")
-
-	// Split everything before the last "or" on commas. Be robust to
-	// commas inside parentheses (like "(like Wieden+Kennedy, Kim)" —
-	// rare but real).
-	var others []string
-	depth := 0
-	start := 0
-	for i := 0; i < len(beforeOr); i++ {
-		switch beforeOr[i] {
-		case '(', '[':
-			depth++
-		case ')', ']':
-			if depth > 0 {
-				depth--
-			}
-		case ',':
-			if depth == 0 {
-				others = append(others, strings.TrimSpace(beforeOr[start:i]))
-				start = i + 1
-			}
-		}
-	}
-	if start < len(beforeOr) {
-		others = append(others, strings.TrimSpace(beforeOr[start:]))
-	}
-	others = append(others, lastOpt)
-
-	// Filter empties + sanity-check.
-	var opts []string
-	for _, o := range others {
-		o = stripMarkdownDecor(strings.TrimSpace(o))
-		if o == "" {
-			continue
-		}
-		// Reject "options" that look like a full sentence or are
-		// implausibly long — those are probably descriptive text
-		// the model added, not enumerated choices.
-		if len(o) > 120 {
-			return "", nil
-		}
-		if strings.Count(o, "?") > 0 {
-			return "", nil
-		}
-		opts = append(opts, o)
-	}
-	if len(opts) < 2 || len(opts) > 6 {
-		return "", nil
-	}
-	return lead, opts
-}
-
-// detectInlineOptions catches the common case where the agent emits
-// a numbered or "**Option X**" list ending with a "Which?" / "Pick"
-// prompt instead of using the QUESTIONS: marker. Synthesizes a
-// single-select question so the picker still renders.
-//
-// Recognizes:
-//   **Option A** / **Option A:** / **Option A — name** / Option A:
-//   Choice 1 / Choice 1:
-// Followed (anywhere later in text) by a question like "Which one?",
-// "Pick one", "Choose one", "Which?", or similar.
-//
-// Returns nil if fewer than 2 options were detected or no closing
-// "which" question — in either case there's no clear single-select
-// to surface.
-func detectInlineOptions(text string) []question {
-	if text == "" {
-		return nil
-	}
-	// Must contain (anywhere, but usually near the end) a single-pick
-	// prompt. The agent's wording varies a lot — "which one?", "which
-	// direction?", "any preference?", "your pick?", "or mix two?" all
-	// signal "I want you to choose".
-	pickRe := regexp.MustCompile(`(?i)\b(?:` +
-		`which(?:\s+\w+)?|` +
-		`pick(?:\s+one)?|` +
-		`choose(?:\s+one)?|` +
-		`(?:any|your)\s+(?:pick|preference|choice|favourite|favorite|pref)|` +
-		`preference\??|` +
-		`or\s+(?:a\s+)?mix(?:\s+\w+)?|` +
-		`thoughts\??` +
-		`)\??`)
-	if !pickRe.MatchString(text) {
-		return nil
-	}
-	// Look for **Option X** / Option X: / Choice N: / N. at line
-	// starts. Capture the human-friendly bit if present so the picker
-	// shows readable labels.
-	optRe := regexp.MustCompile(`(?im)^\s*(?:\*{0,2}|#{0,3})\s*` +
-		`(?:Option\s+([A-Z0-9])|Choice\s+(\d+)|(\d+)\.)\s*` +
-		`\*{0,2}\s*` +
-		`(?:[:—–\-]\s*|\s+)?` +
-		`(?:\*{0,2}\s*"?([^"\n*]{2,200})"?)?`)
-	matches := optRe.FindAllStringSubmatch(text, -1)
-	if len(matches) < 2 {
-		return nil
-	}
-	var labels []string
-	seen := map[string]bool{}
-	for _, m := range matches {
-		// m[1]=letter, m[2]=Choice n, m[3]=plain n., m[4]=label text
-		marker := strings.TrimSpace(m[1] + m[2] + m[3])
-		labelText := shortLabel(m[4])
-		var label string
-		switch {
-		case labelText != "":
-			label = labelText
-		case m[1] != "":
-			label = "Option " + marker
-		case m[2] != "":
-			label = "Choice " + marker
-		default:
-			label = "#" + marker
-		}
-		// Drop duplicates and very-likely false positives.
-		if seen[label] || len(label) < 2 {
-			continue
-		}
-		seen[label] = true
-		labels = append(labels, label)
-	}
-	if len(labels) < 2 {
-		return nil
-	}
-	// Pull the actual question text out of the lead-in. Strategy:
-	// scan back from the first option line, find the last short
-	// question-shaped line before it (ends in '?', ≤120 chars),
-	// fall back to the trailing pick prompt or a generic "Which?".
-	leadQuestion := extractInlineLead(text, optRe)
-	return []question{{
-		Text:    leadQuestion,
-		Options: labels,
-	}}
-}
-
-// extractInlineLead finds the most likely "ask" line for an
-// inline-options block. Walks back from the first numbered/Option
-// match looking for a recent line ending in '?'. If none, looks at
-// the tail of the message for the same shape. Generic "Which?" as
-// a last resort.
-func extractInlineLead(text string, optRe *regexp.Regexp) string {
-	loc := optRe.FindStringIndex(text)
-	if loc != nil && loc[0] > 0 {
-		head := text[:loc[0]]
-		// Last ?-ending line in the head, scanning backwards.
-		lines := strings.Split(head, "\n")
-		for i := len(lines) - 1; i >= 0; i-- {
-			ln := stripMarkdownDecor(strings.TrimSpace(lines[i]))
-			if ln == "" {
-				continue
-			}
-			if strings.HasSuffix(ln, "?") && len(ln) <= 120 {
-				return ln
-			}
-		}
-	}
-	// Tail-of-message scan — the agent's "Any preference?" / "Pick
-	// one?" closer is also a fine question title if the lead-in had
-	// none.
-	tail := text
-	if len(tail) > 200 {
-		tail = tail[len(tail)-200:]
-	}
-	for _, ln := range strings.Split(tail, "\n") {
-		ln = stripMarkdownDecor(strings.TrimSpace(ln))
-		if strings.HasSuffix(ln, "?") && len(ln) <= 80 {
-			return ln
-		}
-	}
-	return "Which?"
-}
-
-// shortLabel takes the verbose option description an agent might emit
-// after "Option A:" and trims it to a short, picker-friendly chunk.
-// Strategy: strip markdown decor, cut at the first " — " / " – " / " - "
-// (em/en/ascii dash with surrounding spaces) since that's a common
-// "name — long description" separator. Hard-cap at 60 chars so a
-// dashless option doesn't blow out the picker width.
-func shortLabel(s string) string {
-	s = stripMarkdownDecor(strings.TrimSpace(s))
-	if s == "" {
-		return ""
-	}
-	for _, sep := range []string{" — ", " – ", " - "} {
-		if i := strings.Index(s, sep); i > 0 {
-			s = s[:i]
-			break
-		}
-	}
-	// Also cut at ":" if the agent used colon-as-separator.
-	if i := strings.Index(s, ":"); i > 0 && i < 60 {
-		s = s[:i]
-	}
-	s = strings.TrimSpace(s)
-	if len(s) > 60 {
-		s = strings.TrimRight(s[:57], " ") + "…"
-	}
-	return s
 }
 
 // splitOptions splits on " / " at top level (not inside parens) — matches
