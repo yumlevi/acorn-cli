@@ -20,8 +20,11 @@ type slashEntry struct {
 	desc string
 }
 
-// All known commands + one-liner descriptions. Extend with the same order
-// SlashHelp renders so the picker and /help stay in sync.
+// All known commands + one-liner descriptions. Each command that takes
+// discrete subcommands (mode/theme/scope/panel/etc.) gets a parent
+// entry AND one entry per subcommand so tab-completion can fill in the
+// full form. Order matches roughly what /help renders but groups
+// subcommands under their parent for readability.
 var slashCatalog = []slashEntry{
 	{"/help", "show this list"},
 	{"/new", "start a fresh session in this cwd"},
@@ -32,30 +35,88 @@ var slashCatalog = []slashEntry{
 	{"/stop", "stop the current generation"},
 	{"/plan", "toggle plan/execute mode (same as Shift+Tab)"},
 	{"/status", "connection + session info"},
+
+	// Theme — name hints kept in the parent description so users
+	// browsing the list can see them at a glance.
 	{"/theme", "switch theme (dark/oak/forest/oled/light/…)"},
+	{"/theme dark", "switch to dark theme"},
+	{"/theme oak", "switch to oak theme"},
+	{"/theme forest", "switch to forest theme"},
+	{"/theme oled", "switch to oled theme"},
+	{"/theme light", "switch to light theme"},
+
+	// Tool approval mode — every variant tab-completable.
 	{"/mode", "tool approval mode (auto/ask/locked/yolo/rules)"},
+	{"/mode auto", "auto-approve all tools"},
+	{"/mode ask", "prompt before each tool call"},
+	{"/mode locked", "deny all tools (read-only chat)"},
+	{"/mode yolo", "auto-approve EVERYTHING incl. dangerous"},
+	{"/mode rules", "follow per-tool allow/deny rules"},
 	{"/approve-all", "shortcut for /mode auto"},
 	{"/approve-all-dangerous", "shortcut for /mode yolo"},
+
+	// Background processes.
 	{"/bg", "background process list / run / kill"},
+	{"/bg list", "list background processes"},
+	{"/bg run", "/bg run <command> — start a background process"},
+	{"/bg kill", "/bg kill <id> — kill a background process"},
+
 	{"/update", "check/install the latest release"},
+	{"/update check", "check for the latest release without installing"},
+	{"/update install", "install the latest release"},
+
 	{"/context", "show the project context block"},
-	{"/tree", "print the project file tree"},
-	{"/init", "create ACORN.md template"},
+	{"/context refresh", "re-send project context on next message"},
+
+	{"/tree", "print the project file tree (default depth 3)"},
+	{"/init", "create ACORN.md template + add .acorn/ to .gitignore"},
+
+	// Panel visibility.
 	{"/panel", "toggle the right-column activity panel"},
+	{"/panel hide", "hide the activity panel"},
+	{"/panel show", "show the activity panel"},
+	{"/panel toggle", "toggle the activity panel"},
+
+	// File-op sandbox.
 	{"/scope", "file-op sandbox: strict (cwd) | expanded (any path)"},
+	{"/scope strict", "lock file ops to cwd (default)"},
+	{"/scope expanded", "allow file ops anywhere on this machine"},
+
 	{"/test", "run a UI / behavior test (try /test list)"},
+	{"/test list", "list available UI tests"},
+	{"/test all", "run all UI tests"},
 }
 
-// refreshSuggest recomputes matches for the current input buffer. Only
-// fires when the buffer starts with `/` — otherwise we clear suggestions.
+// refreshSuggest recomputes matches for the current input buffer.
+// Fires whenever the buffer starts with `/` and is itself a valid prefix
+// of some catalog entry. That includes the "/cmd " case (parent + one
+// trailing space) so subcommand lists pop up once the user finishes
+// typing the parent — handy when you forget the option name.
 func (m *Model) refreshSuggest() {
-	text := strings.TrimSpace(m.input.Value())
-	if !strings.HasPrefix(text, "/") || strings.Contains(text, " ") {
+	raw := m.input.Value()
+	// Don't trim — we need to detect the trailing-space case so
+	// subcommand entries can surface after `/cmd `.
+	text := strings.TrimLeft(raw, " ")
+	if !strings.HasPrefix(text, "/") {
 		m.suggest.visible = false
 		m.suggest.matches = nil
 		m.suggest.cursor = 0
 		return
 	}
+	// If the user has typed past the first arg (two or more spaces, or
+	// a space+non-empty arg), we hide — at that point the user is
+	// composing arguments, not picking a subcommand.
+	trimmed := strings.TrimRight(text, " ")
+	tokens := strings.SplitN(trimmed, " ", 3)
+	if len(tokens) >= 3 {
+		m.suggest.visible = false
+		m.suggest.matches = nil
+		m.suggest.cursor = 0
+		return
+	}
+	// `prefix` is what every shown entry must start with. For "/sc" it's
+	// "/sc"; for "/scope " it's "/scope " (with the space) — so only
+	// `/scope strict` / `/scope expanded` survive, not `/scope` itself.
 	prefix := text
 	out := make([]slashEntry, 0, len(slashCatalog))
 	for _, e := range slashCatalog {
@@ -73,6 +134,16 @@ func (m *Model) refreshSuggest() {
 
 // handleSuggestKey intercepts navigation / accept keys while the dropdown
 // is open. Returns true if the key was consumed (don't forward to textarea).
+//
+// Key map:
+//
+//	↑ / shift+tab   move cursor up
+//	↓               move cursor down
+//	tab             FILL the highlighted suggestion into the buffer (no
+//	                execute) — lets you tab to a parent then keep typing
+//	                an arg, or tab to a subcommand variant and edit.
+//	enter           ACCEPT + EXECUTE — fills and immediately runs.
+//	esc             dismiss the dropdown
 func (m *Model) handleSuggestKey(km tea.KeyMsg) (tea.Cmd, bool) {
 	if !m.suggest.visible || len(m.suggest.matches) == 0 {
 		return nil, false
@@ -81,22 +152,28 @@ func (m *Model) handleSuggestKey(km tea.KeyMsg) (tea.Cmd, bool) {
 	case "up", "shift+tab":
 		m.suggest.cursor = (m.suggest.cursor - 1 + len(m.suggest.matches)) % len(m.suggest.matches)
 		return nil, true
-	case "down", "tab":
+	case "down":
 		m.suggest.cursor = (m.suggest.cursor + 1) % len(m.suggest.matches)
 		return nil, true
-	case "enter":
+	case "tab":
+		// Fill and stay editing. Trailing space lets the user keep typing
+		// args without re-positioning the cursor. Re-runs refreshSuggest
+		// so subcommand entries surface immediately if the filled value
+		// is a parent that has variants.
 		e := m.suggest.matches[m.suggest.cursor]
 		m.input.SetValue(e.cmd + " ")
-		// Execute immediately on enter only when user hit the one they wanted:
-		// if the buffer was already an exact match (e.g., typed /status + enter),
-		// execute; otherwise just complete and let the user add args.
-		if strings.TrimSpace(m.input.Value()) == e.cmd {
-			m.suggest.visible = false
-			m.suggest.matches = nil
-			return nil, false // fall through to updateKey enter → handleSlashCommand
-		}
-		m.suggest.visible = false
+		m.refreshSuggest()
 		return nil, true
+	case "enter":
+		// Accept + execute. Fill the buffer with exactly the entry's
+		// command (no trailing space — looks cleaner in the chat echo)
+		// and fall through so updateKey's enter branch runs the slash
+		// dispatch.
+		e := m.suggest.matches[m.suggest.cursor]
+		m.input.SetValue(e.cmd)
+		m.suggest.visible = false
+		m.suggest.matches = nil
+		return nil, false // fall through to updateKey enter → handleSlashCommand
 	case "esc":
 		m.suggest.visible = false
 		m.suggest.matches = nil
