@@ -1,6 +1,9 @@
 package app
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // Standard prose form — single-select, multi-select, open-ended on
 // successive lines. The bedrock test: the agent followed the prompt
@@ -112,5 +115,34 @@ func TestParseQuestionsBlock_openEndedWithOrPhrasingNotSplit(t *testing.T) {
 	want := "Do you want to refactor the Python CLI or finish the Go port or a staged migration (improve Python first, then port)?"
 	if qs[0].Text != want {
 		t.Errorf("text mangled:\n  got:  %q\n  want: %q", qs[0].Text, want)
+	}
+}
+
+// Real captured turn — Kimi K2.6 emitted broken JSON (missing braces +
+// dropped comma+quote separators between fields) that strict
+// json.Unmarshal can't touch. Recovery should still pull the four
+// "text": "..." prompts out as open-ended pickers.
+func TestParseQuestionsBlock_recoversMalformedJSON(t *testing.T) {
+	in := "QUESTIONS:\n\n" +
+		"text\": \"Which hardening areas are most worried about? all that apply \"type\": \"\", \"options\": [\"Companionmobile sees wrong)\", \"Silent failures / swallowed errors\",Test coverage gaps\",WebSocket losing state\", \"Tool sandbox\", \"Config / log corruptionUI dead code causing crashes\"]},\n" +
+		" text\": \"Have already seen specific in the Go If so, broke?\", \"type \"open " +
+		"{\"text\": \"How do you companion app sync today — manual smoke test or do you steps?\", \"type\": \"  " +
+		"{\"text\": \"What's your definition 'done' this hardening sprint (e all tests pass, companion stays in X hours, no more silent failures, etc.)\", \" \"open\"}\n```"
+	qs := parseQuestionsBlock(in)
+	if len(qs) != 4 {
+		t.Fatalf("expected 4 recovered questions, got %d: %#v", len(qs), qs)
+	}
+	for i, q := range qs {
+		if q.Text == "" {
+			t.Errorf("q%d empty text", i)
+		}
+		if !strings.HasSuffix(q.Text, "?") {
+			t.Errorf("q%d text missing '?' suffix: %q", i, q.Text)
+		}
+	}
+	// First question's options were technically present in the broken
+	// JSON (the array brackets survived). Recovery should lift them.
+	if len(qs[0].Options) < 5 {
+		t.Errorf("q0 expected ≥5 recovered options, got %d: %v", len(qs[0].Options), qs[0].Options)
 	}
 }

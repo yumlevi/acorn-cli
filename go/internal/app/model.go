@@ -89,6 +89,13 @@ type Model struct {
 	// — same composition fix as the Python 277fc8c commit.
 	stashedPlan string
 
+	// questionsRetryAttempted tracks whether we've already auto-asked
+	// the agent to re-emit a malformed QUESTIONS: block this turn.
+	// Reset to false the moment a clean parse succeeds OR we've used
+	// our one retry. Prevents infinite loops if the agent keeps
+	// emitting broken JSON.
+	questionsRetryAttempted bool
+
 	// sendProgramMsg is wired by main.go after tea.NewProgram so off-thread
 	// goroutines (the permissions blocking prompt) can poke the UI.
 	sendProgramMsg func(msg tea.Msg)

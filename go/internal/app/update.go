@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -843,7 +844,12 @@ func (m *Model) handleFrame(f conn.Frame) tea.Cmd {
 		m.endStream()
 		m.generating = false
 		m.status = ""
-		m.postStreamChecks()
+		// postStreamChecks may return an auto-retry cmd (when the agent
+		// emitted a malformed QUESTIONS: block). Forward it through
+		// handleFrame's return so the next chat:submit goes out.
+		if cmd := m.postStreamChecks(); cmd != nil {
+			return cmd
+		}
 	case "chat:thinking":
 		var v proto.ChatThinking
 		_ = json.Unmarshal(f.Raw, &v)
@@ -1098,26 +1104,51 @@ func truncateForLog(s string, n int) string {
 }
 
 // postStreamChecks runs after chat:done to detect QUESTIONS: / PLAN_READY.
-func (m *Model) postStreamChecks() {
+// Returns a tea.Cmd ONLY when we need to send an auto-retry to the agent
+// (malformed QUESTIONS: block on the first attempt). Caller in handleFrame
+// must dispatch the returned cmd.
+func (m *Model) postStreamChecks() tea.Cmd {
 	if m.currentStreamIdx >= 0 || len(m.messages) == 0 {
-		return
+		return nil
 	}
 	last := m.messages[len(m.messages)-1]
 	if last.Role != "assistant" {
-		return
+		return nil
 	}
 	hasPlan := m.planMode && strings.Contains(last.Text, "PLAN_READY")
 	if hasPlan {
 		m.stashedPlan = last.Text
 	}
 	if qs := parseQuestionsBlock(last.Text); qs != nil {
+		m.questionsRetryAttempted = false // success — clear the retry flag
 		m.openQuestionModal(qs)
-		return
+		return nil
+	}
+	// QUESTIONS: marker present but nothing parseable came back. Model
+	// probably emitted broken JSON mid-stream (Kimi-class observed
+	// dropping chunks). Auto-retry once: send the agent a fixup prompt
+	// that re-states the format. Loop guard: if the retry also fails,
+	// we don't retry again — just surface a system message and let the
+	// user decide.
+	qMarkerRe := regexp.MustCompile(`(?mi)^\s*[*_` + "`" + `]{0,2}\s*QUESTIONS?\s*:`)
+	if qMarkerRe.MatchString(last.Text) {
+		if m.questionsRetryAttempted {
+			m.questionsRetryAttempted = false
+			m.pushChat("system", "Agent's QUESTIONS: block is still malformed after one auto-retry. Reply with anything to ask the question another way, or skip the picker entirely.")
+		} else {
+			m.questionsRetryAttempted = true
+			m.pushChat("system", "Agent's QUESTIONS: block was malformed (probably a streaming glitch) — auto-asking the agent to re-emit it cleanly.")
+			fixup := "Your previous response had a `QUESTIONS:` marker but the JSON couldn't be parsed (likely streaming corruption — chars got dropped between fields). Re-emit ONLY the QUESTIONS: block as valid JSON, in this exact shape:\n\nQUESTIONS:\n```json\n[\n  {\"text\": \"Question text?\", \"type\": \"single|multi|open\", \"options\": [\"A\", \"B\", \"C\"]}\n]\n```\n\nNo prose before or after. Just the marker line and the JSON array. Each item needs `text` (string), `type` (\"single\" / \"multi\" / \"open\"), and — for non-open — an `options` array of strings."
+			m.generating = true
+			m.status = "asking agent to fix questions…"
+			return m.sendChatWithMode(fixup, "plan")
+		}
 	}
 	if hasPlan {
 		m.openPlanModal(m.stashedPlan)
 		m.stashedPlan = ""
 	}
+	return nil
 }
 
 // truncateFor is a mini helper for log-line output (view.go has its own).

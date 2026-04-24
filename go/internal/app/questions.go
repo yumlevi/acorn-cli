@@ -233,7 +233,10 @@ func stripMarkdownDecor(s string) string {
 func parseQuestionsJSON(body string) []question {
 	raw := extractJSONArray(body)
 	if raw == "" {
-		return nil
+		// No leading `[` at all — try recovery anyway in case the
+		// model dropped both the fence and the array open. The mangled
+		// JSON case in the field had no recoverable bracket structure.
+		return recoverMalformedQuestions(body)
 	}
 	type jq struct {
 		Text    string   `json:"text"`
@@ -242,7 +245,11 @@ func parseQuestionsJSON(body string) []question {
 	}
 	var items []jq
 	if err := json.Unmarshal([]byte(raw), &items); err != nil {
-		return nil
+		// Strict parse failed — model probably dropped delimiters
+		// mid-stream (consistent pattern: missing `{`, missing
+		// comma+quote separators, options run together). Fall back
+		// to a best-effort regex sweep for "text": "..." pairs.
+		return recoverMalformedQuestions(body)
 	}
 	if len(items) == 0 {
 		return nil
@@ -285,6 +292,114 @@ func parseQuestionsJSON(body string) []question {
 		return nil
 	}
 	return qs
+}
+
+// recoverMalformedQuestions is the last-ditch parser for when the model
+// streamed broken JSON. Captures every `"text": "..."` occurrence as a
+// candidate question and tries to grab a following `"options": [...]`
+// list within a small window. Loses the type field entirely — recovered
+// questions render as single-select if options were salvageable, else
+// open-ended. Returns nil when nothing of the shape was found.
+//
+// Real example from the field (Kimi K2.6 dropped chunks mid-stream):
+//
+//	text": "Which hardening areas are most worried about? all that apply
+//	"type": "", "options": ["Companionmobile sees wrong)", "Silent failures
+//	/ swallowed errors",Test coverage gaps", ...
+//
+// Strict json.Unmarshal bails on this. The regex sweep recovers the four
+// question prompts as open-ended pickers, which is far better than the
+// previous behavior (raw broken JSON dumped into chat, no picker).
+func recoverMalformedQuestions(body string) []question {
+	// `text` key followed by `:` + quoted string. The leading `"` is
+	// OPTIONAL — the field-observed corruption pattern drops both `{`
+	// and the opening quote (so the key appears as bare `text":`).
+	// We anchor with a preceding non-letter (or start of string) so
+	// we don't false-positive on words ending in "text" inside prose.
+	// Captures the value string with backslash-escape tolerance.
+	textRe := regexp.MustCompile(`(?:^|[^a-zA-Z])"?text"\s*:\s*"((?:\\.|[^"\\])*)"`)
+	// Best-effort options sweep — find a `"options": [` anywhere in
+	// the next ~600 chars and grab everything until the matching `]`
+	// (no nested arrays expected here).
+	optsRe := regexp.MustCompile(`(?s)"options"\s*:\s*\[(.*?)\]`)
+	itemRe := regexp.MustCompile(`"((?:\\.|[^"\\])*)"`)
+
+	matches := textRe.FindAllStringSubmatchIndex(body, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	var qs []question
+	for i, m := range matches {
+		// m[0..1] = full match span; m[2..3] = capture group 1 (text)
+		text := body[m[2]:m[3]]
+		text = unescapeJSONStringSafe(text)
+		text = strings.TrimSpace(stripMarkdownDecor(text))
+		if text == "" {
+			continue
+		}
+		if !strings.HasSuffix(text, "?") {
+			text += "?"
+		}
+		// Window for options lookup: from the end of this text match
+		// to the start of the NEXT text match (or end of body).
+		lookFrom := m[1]
+		lookTo := len(body)
+		if i+1 < len(matches) {
+			lookTo = matches[i+1][0]
+		}
+		window := body[lookFrom:lookTo]
+		var opts []string
+		if om := optsRe.FindStringSubmatch(window); om != nil {
+			for _, im := range itemRe.FindAllStringSubmatch(om[1], -1) {
+				opt := strings.TrimSpace(unescapeJSONStringSafe(im[1]))
+				if opt != "" {
+					opts = append(opts, opt)
+				}
+			}
+		}
+		q := question{Text: text}
+		if len(opts) >= 2 {
+			q.Options = opts
+		}
+		qs = append(qs, q)
+	}
+	if len(qs) == 0 {
+		return nil
+	}
+	return qs
+}
+
+// unescapeJSONStringSafe handles \\ \" \n \t \r — the common escapes
+// likely to appear inside captured "text" / "options" strings. Wrapping
+// the input in quotes and round-tripping through json.Unmarshal would
+// be more correct but breaks on partial captures from broken streams.
+func unescapeJSONStringSafe(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			switch s[i+1] {
+			case '"':
+				b.WriteByte('"')
+			case '\\':
+				b.WriteByte('\\')
+			case 'n':
+				b.WriteByte('\n')
+			case 't':
+				b.WriteByte('\t')
+			case 'r':
+				b.WriteByte('\r')
+			case '/':
+				b.WriteByte('/')
+			default:
+				b.WriteByte(s[i+1])
+			}
+			i++
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
 
 // extractJSONArray pulls a JSON array string out of `body`. Prefers a
